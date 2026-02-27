@@ -39,10 +39,22 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error(error);
-    const message =
-      error instanceof Error ? error.message : "Internal server error";
+    let message: string;
+    if (error instanceof Error) {
+      message = error.message;
+    } else if (error && typeof (error as { message?: unknown }).message === "string") {
+      message = (error as { message: string }).message;
+    } else if (typeof error === "string") {
+      message = error;
+    } else {
+      try {
+        message = JSON.stringify(error);
+      } catch {
+        message = String(error);
+      }
+    }
     return NextResponse.json(
       { error: message },
       { status: 500 }
