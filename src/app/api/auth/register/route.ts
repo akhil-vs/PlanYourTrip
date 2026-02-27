@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
   try {
+    console.log("Registering user");
     const { name, email, password } = await req.json();
 
     if (!name || !email || !password) {
@@ -37,7 +38,9 @@ export async function POST(req: NextRequest) {
       { id: user.id, name: user.name, email: user.email },
       { status: 201 }
     );
-  } catch {
+
+  } catch (error) {
+    console.error(error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
