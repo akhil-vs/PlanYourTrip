@@ -956,16 +956,21 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
         window.setTimeout(() => setLiveCollabToast(""), 2200);
       }
       if (parsed?.id && parsed.type && parsed.createdAt) {
+        const eventId = parsed.id;
+        const eventType = parsed.type;
+        const eventCreatedAt = parsed.createdAt;
+        const eventPayload = parsed.payload || {};
+        const eventActorId = parsed.actorId;
         setActivityEvents((prev) => {
           const next = [
             {
-              id: parsed.id,
-              type: parsed.type,
-              payload: parsed.payload || {},
-              actorId: parsed.actorId,
-              createdAt: parsed.createdAt,
+              id: eventId,
+              type: eventType,
+              payload: eventPayload,
+              actorId: eventActorId,
+              createdAt: eventCreatedAt,
             },
-            ...prev.filter((evt) => evt.id !== parsed?.id),
+            ...prev.filter((evt) => evt.id !== eventId),
           ];
           return next.slice(0, 40);
         });
