@@ -82,3 +82,61 @@ export async function getDirections(
   if (!res.ok) return null;
   return res.json();
 }
+
+interface OptimizerInputWaypoint {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  order: number;
+}
+
+export async function optimizeWaypoints(
+  waypoints: OptimizerInputWaypoint[],
+  fixedStart = true,
+  fixedEnd = true,
+  dayStartMinutes?: number,
+  dayEndMinutes?: number,
+  defaultVisitMinutes?: number,
+  lockedWaypointIds?: string[],
+  visitMinutesByWaypointId?: Record<string, number>,
+  timeWindowsByWaypointId?: Record<string, { openMinutes: number; closeMinutes: number }>
+): Promise<
+  | {
+      waypoints: OptimizerInputWaypoint[];
+      days: { day: number; waypointIndexes: number[]; estimatedTravelMinutes: number }[];
+      conflicts: { waypointId?: string; message: string }[];
+    }
+  | null
+> {
+  if (waypoints.length < 2) {
+    return { waypoints, days: [], conflicts: [] };
+  }
+  const res = await fetch("/api/optimize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      waypoints,
+      fixedStart,
+      fixedEnd,
+      dayStartMinutes,
+      dayEndMinutes,
+      defaultVisitMinutes,
+      lockedWaypointIds,
+      visitMinutesByWaypointId,
+      timeWindowsByWaypointId,
+    }),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    waypoints?: OptimizerInputWaypoint[];
+    days?: { day: number; waypointIndexes: number[]; estimatedTravelMinutes: number }[];
+    conflicts?: { waypointId?: string; message: string }[];
+  };
+  if (!data.waypoints) return null;
+  return {
+    waypoints: data.waypoints,
+    days: data.days || [],
+    conflicts: data.conflicts || [],
+  };
+}

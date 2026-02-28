@@ -17,6 +17,7 @@ import {
   Utensils,
   ImageOff,
 } from "lucide-react";
+import { parseOpeningHoursWindow } from "@/lib/utils/openingHours";
 
 interface PlaceDetail {
   id: string;
@@ -29,6 +30,7 @@ interface PlaceDetail {
   lng: number;
   kinds: string;
   rating: number;
+  openingHours?: string;
 }
 
 interface PlaceDetailPanelProps {
@@ -39,44 +41,63 @@ interface PlaceDetailPanelProps {
 export function PlaceDetailPanel({ poi, onClose }: PlaceDetailPanelProps) {
   const [detail, setDetail] = useState<PlaceDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [added, setAdded] = useState(false);
   const insertWaypointNear = useTripStore((s) => s.insertWaypointNear);
   const waypoints = useTripStore((s) => s.waypoints);
   const setViewState = useMapStore((s) => s.setViewState);
 
   useEffect(() => {
-    setDetail(null);
-    setAdded(false);
+    let cancelled = false;
 
     if (poi.source === "opentripmap") {
-      setLoading(true);
+      queueMicrotask(() => {
+        if (!cancelled) setLoading(true);
+      });
       fetch(`/api/attractions/${poi.id}`)
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
+          if (cancelled) return;
           if (data) setDetail(data);
           setLoading(false);
         })
-        .catch(() => setLoading(false));
+        .catch(() => {
+          if (cancelled) return;
+          setLoading(false);
+        });
     } else {
-      setDetail({
-        id: poi.id,
-        name: poi.name,
-        description: "",
-        image: poi.image || "",
-        url: poi.url || "",
-        address: poi.address || "",
-        lat: poi.lat,
-        lng: poi.lng,
-        kinds: poi.subcategory || "",
-        rating: poi.rating || 0,
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setDetail({
+          id: poi.id,
+          name: poi.name,
+          description: "",
+          image: poi.image || "",
+          url: poi.url || "",
+          address: poi.address || "",
+          lat: poi.lat,
+          lng: poi.lng,
+          kinds: poi.subcategory || "",
+          rating: poi.rating || 0,
+          openingHours: poi.openingHours || "",
+        });
+        setLoading(false);
       });
     }
+    return () => {
+      cancelled = true;
+    };
   }, [poi]);
 
   const handleAddToRoute = () => {
     const name = detail?.name || poi.name;
-    insertWaypointNear({ name, lat: poi.lat, lng: poi.lng });
-    setAdded(true);
+    const parsedWindow = parseOpeningHoursWindow(
+      detail?.openingHours || poi.openingHours
+    );
+    insertWaypointNear({
+      name,
+      lat: poi.lat,
+      lng: poi.lng,
+      ...(parsedWindow || {}),
+    });
   };
 
   const alreadyInRoute = waypoints.some(
@@ -236,15 +257,13 @@ export function PlaceDetailPanel({ poi, onClose }: PlaceDetailPanelProps) {
         <Button
           className="w-full gap-2"
           onClick={handleAddToRoute}
-          disabled={added || alreadyInRoute}
+          disabled={alreadyInRoute}
           size="sm"
         >
           <Plus className="h-4 w-4" />
           {alreadyInRoute
             ? "Already in Route"
-            : added
-              ? "Added to Route!"
-              : waypoints.length === 0
+            : waypoints.length === 0
                 ? "Add as First Stop"
                 : "Add to Route (nearest stop)"}
         </Button>

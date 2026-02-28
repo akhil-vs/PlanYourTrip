@@ -21,6 +21,7 @@ import {
   ExternalLink,
   ImageOff,
 } from "lucide-react";
+import { parseOpeningHoursWindow } from "@/lib/utils/openingHours";
 
 type ExploreTab = "menu" | "attractions" | "stays" | "food";
 
@@ -33,6 +34,7 @@ interface PlaceDetail {
   address: string;
   kinds: string;
   rating: number;
+  openingHours?: string;
 }
 
 export function WaypointExplorePanel() {
@@ -129,12 +131,23 @@ export function WaypointExplorePanel() {
         address: poi.address || "",
         kinds: poi.subcategory || "",
         rating: poi.rating || 0,
+        openingHours: poi.openingHours || "",
       });
     }
   };
 
   const handleAddToRoute = (poi: POI) => {
-    insertWaypointNear({ name: poi.name, lat: poi.lat, lng: poi.lng });
+    const openingHoursSource =
+      selectedPOI?.id === poi.id ? detail?.openingHours || poi.openingHours : poi.openingHours;
+    const parsedWindow = parseOpeningHoursWindow(
+      openingHoursSource
+    );
+    insertWaypointNear({
+      name: poi.name,
+      lat: poi.lat,
+      lng: poi.lng,
+      ...(parsedWindow || {}),
+    });
     setAddedIds((prev) => new Set(prev).add(poi.id));
   };
 

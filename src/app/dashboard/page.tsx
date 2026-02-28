@@ -5,6 +5,7 @@ import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -30,6 +31,8 @@ import {
   LogOut,
   User,
   Share2,
+  FileDown,
+  Users2,
 } from "lucide-react";
 
 function WhatsAppIcon({ className }: { className?: string }) {
@@ -64,21 +67,34 @@ interface Trip {
   id: string;
   name: string;
   description: string | null;
+  status: "DRAFT" | "FINALIZED";
+  isPublic: boolean;
+  shareId: string;
   createdAt: string;
   updatedAt: string;
+  members?: { role: "OWNER" | "EDITOR" | "VIEWER" }[];
   waypoints: { id: string; name: string; lat: number; lng: number; order: number }[];
-  _count: { savedPlaces: number };
+  _count: { savedPlaces: number; members?: number };
+}
+
+interface TripTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  updatedAt: string;
+  waypoints: { id: string; name: string; lat: number; lng: number; order: number }[];
 }
 
 export default function DashboardPage() {
   const { data: session } = useSession();
   const router = useRouter();
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [templates, setTemplates] = useState<TripTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [templateLoadingId, setTemplateLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (session?.user) {
-      setLoading(true);
       fetch("/api/trips")
         .then((res) => {
           if (!res.ok) throw new Error("Failed to fetch");
@@ -89,6 +105,11 @@ export default function DashboardPage() {
           setLoading(false);
         })
         .catch(() => setLoading(false));
+
+      fetch("/api/templates")
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data) => setTemplates(Array.isArray(data) ? data : []))
+        .catch(() => setTemplates([]));
     }
   }, [session]);
 
@@ -99,14 +120,41 @@ export default function DashboardPage() {
     setTrips((prev) => prev.filter((t) => t.id !== tripId));
   };
 
+  const handleSaveTemplate = async (e: React.MouseEvent, tripId: string) => {
+    e.stopPropagation();
+    const res = await fetch("/api/templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tripId }),
+    });
+    if (!res.ok) return;
+    const template = await res.json();
+    setTemplates((prev) => [template, ...prev]);
+  };
+
+  const handleUseTemplate = async (templateId: string) => {
+    setTemplateLoadingId(templateId);
+    const res = await fetch(`/api/templates/${templateId}/use`, { method: "POST" });
+    if (!res.ok) {
+      setTemplateLoadingId(null);
+      return;
+    }
+    const trip = await res.json();
+    router.push(`/planner/${trip.id}`);
+  };
+
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const getTripShareUrl = (tripId: string) =>
-    `${typeof window !== "undefined" ? window.location.origin : ""}/planner/${tripId}`;
+  const getTripShareUrl = async (tripId: string) => {
+    const res = await fetch(`/api/trips/${tripId}/share`, { method: "POST" });
+    if (!res.ok) throw new Error("Failed to generate share link");
+    const data = await res.json();
+    return data.shareUrl as string;
+  };
 
   const handleCopyLink = async (e: React.MouseEvent, tripId: string) => {
     e.stopPropagation();
-    const url = getTripShareUrl(tripId);
+    const url = await getTripShareUrl(tripId);
     await navigator.clipboard.writeText(url);
     setCopiedId(tripId);
     setTimeout(() => setCopiedId(null), 2000);
@@ -114,23 +162,34 @@ export default function DashboardPage() {
 
   const handleShareWhatsApp = (e: React.MouseEvent, tripId: string) => {
     e.stopPropagation();
-    const url = getTripShareUrl(tripId);
-    const text = `Check out my trip plan: ${url}`;
-    window.open(
-      `https://wa.me/?text=${encodeURIComponent(text)}`,
-      "_blank",
-      "noopener,noreferrer"
-    );
+    getTripShareUrl(tripId)
+      .then((url) => {
+        const text = `Check out my trip plan: ${url}`;
+        window.open(
+          `https://wa.me/?text=${encodeURIComponent(text)}`,
+          "_blank",
+          "noopener,noreferrer"
+        );
+      })
+      .catch(() => {});
   };
 
   const handleShareFacebook = (e: React.MouseEvent, tripId: string) => {
     e.stopPropagation();
-    const url = getTripShareUrl(tripId);
-    window.open(
-      `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
-      "_blank",
-      "noopener,noreferrer,width=600,height=400"
-    );
+    getTripShareUrl(tripId)
+      .then((url) => {
+        window.open(
+          `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
+          "_blank",
+          "noopener,noreferrer,width=600,height=400"
+        );
+      })
+      .catch(() => {});
+  };
+
+  const handleExportPdf = (e: React.MouseEvent, tripId: string) => {
+    e.stopPropagation();
+    window.open(`/api/trips/${tripId}/export/pdf`, "_blank", "noopener,noreferrer");
   };
 
   const formatDate = (dateStr: string) => {
@@ -197,6 +256,40 @@ export default function DashboardPage() {
           </p>
         </div>
 
+        {templates.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Templates</h2>
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {templates.map((template) => (
+                <Card key={template.id} className="border-dashed">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base truncate">{template.name}</CardTitle>
+                    {template.description && (
+                      <CardDescription className="line-clamp-2">
+                        {template.description}
+                      </CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="text-xs text-muted-foreground">
+                      {template.waypoints.length} stop{template.waypoints.length !== 1 ? "s" : ""} ·
+                      {" "}updated {formatDate(template.updatedAt)}
+                    </div>
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      disabled={templateLoadingId === template.id}
+                      onClick={() => handleUseTemplate(template.id)}
+                    >
+                      {templateLoadingId === template.id ? "Creating trip..." : "Use Template"}
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[...Array(3)].map((_, i) => (
@@ -233,6 +326,16 @@ export default function DashboardPage() {
                       <CardTitle className="text-lg truncate">
                         {trip.name}
                       </CardTitle>
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <Badge variant={trip.status === "FINALIZED" ? "default" : "secondary"}>
+                          {trip.status === "FINALIZED" ? "Finalized" : "Draft"}
+                        </Badge>
+                        {trip.isPublic && <Badge variant="outline">Published</Badge>}
+                        <Badge variant="outline" className="gap-1">
+                          <Users2 className="h-3 w-3" />
+                          {trip._count.members ?? 1}
+                        </Badge>
+                      </div>
                       {trip.description && (
                         <CardDescription className="mt-1 line-clamp-2">
                           {trip.description}
@@ -268,6 +371,21 @@ export default function DashboardPage() {
                         >
                           <FacebookIcon className="h-4 w-4 mr-2" />
                           Share on Facebook
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={(e) => handleSaveTemplate(e, trip.id)}
+                        >
+                          <Route className="h-4 w-4 mr-2" />
+                          Save as template
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={(e) => handleExportPdf(e, trip.id)}
+                          disabled={trip.status !== "FINALIZED"}
+                        >
+                          <FileDown className="h-4 w-4 mr-2" />
+                          Export PDF
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem

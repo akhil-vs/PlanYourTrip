@@ -1,17 +1,30 @@
 "use client";
 
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useMapStore } from "@/stores/mapStore";
-import { useTripStore } from "@/stores/tripStore";
-import { getDirections } from "@/lib/api/mapbox";
+import { useTripStore, WaypointData } from "@/stores/tripStore";
+import { getDirections, optimizeWaypoints } from "@/lib/api/mapbox";
 import { SearchInput } from "./SearchInput";
 import { WaypointList } from "./WaypointList";
 import { FilterPanel } from "./FilterPanel";
 import { PlaceDetailPanel } from "./PlaceDetailPanel";
+import { TripMembersPanel } from "./TripMembersPanel";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import Link from "next/link";
 import {
   MapPin,
@@ -22,6 +35,17 @@ import {
   Pencil,
   Check,
   Home,
+  Sparkles,
+  Undo2,
+  RotateCcw,
+  CalendarDays,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  Users,
+  FileDown,
+  Globe,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -29,8 +53,32 @@ interface PlannerSidebarProps {
   tripId?: string;
 }
 
+interface DayPlan {
+  day: number;
+  waypointIds: string[];
+  estimatedTravelMinutes: number;
+}
+
+interface OptimizationSnapshot {
+  waypoints: WaypointData[];
+  days: DayPlan[];
+  summary: string;
+}
+
+type TripRole = "OWNER" | "EDITOR" | "VIEWER";
+type TripStatus = "DRAFT" | "FINALIZED";
+
 export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
-  const { sidebarOpen, setSidebarOpen } = useMapStore();
+  const {
+    sidebarOpen,
+    setSidebarOpen,
+    dayStartMinutes,
+    dayEndMinutes,
+    defaultVisitMinutes,
+    setDayStartMinutes,
+    setDayEndMinutes,
+    setDefaultVisitMinutes,
+  } = useMapStore();
   const {
     waypoints,
     tripName,
@@ -41,6 +89,8 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     setLoading,
     setSelectedPOI,
     resetTrip,
+    reorderWaypoints,
+    updateWaypoint,
   } = useTripStore();
   const { data: session } = useSession();
   const [saving, setSaving] = useState(false);
@@ -48,6 +98,194 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
   const [saveError, setSaveError] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(tripName);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizeSummary, setOptimizeSummary] = useState("");
+  const [optimizeDays, setOptimizeDays] = useState<DayPlan[]>([]);
+  const [showDayPlanner, setShowDayPlanner] = useState(false);
+  const [dayPlannerOpen, setDayPlannerOpen] = useState(false);
+  const [expandedDay, setExpandedDay] = useState<number | null>(null);
+  const [optimizationConflicts, setOptimizationConflicts] = useState<string[]>([]);
+  const [visitMinutesByWaypointId, setVisitMinutesByWaypointId] = useState<
+    Record<string, number>
+  >({});
+  const [timeWindowsByWaypointId, setTimeWindowsByWaypointId] = useState<
+    Record<string, { openMinutes: number; closeMinutes: number }>
+  >({});
+  const [optimizationHistory, setOptimizationHistory] = useState<
+    OptimizationSnapshot[]
+  >([]);
+  const [optimizationBaseline, setOptimizationBaseline] =
+    useState<OptimizationSnapshot | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState<TripRole>("OWNER");
+  const [tripStatus, setTripStatus] = useState<TripStatus>("DRAFT");
+  const [memberCount, setMemberCount] = useState(1);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [liveCollabToast, setLiveCollabToast] = useState("");
+  const lastEventAtRef = useRef(0);
+
+  const canEditTrip =
+    (currentUserRole === "OWNER" || currentUserRole === "EDITOR") &&
+    tripStatus === "DRAFT";
+  const canManageTrip = currentUserRole === "OWNER";
+
+  const getCollabToastMessage = (eventType?: string, actorName?: string) => {
+    const actor = actorName || "Someone";
+    switch (eventType) {
+      case "trip.updated":
+        return `${actor} edited this trip.`;
+      case "trip.created":
+        return `${actor} created this trip.`;
+      case "trip.finalized":
+        return `${actor} finalized the trip.`;
+      case "trip.unfinalized":
+        return `${actor} reopened the trip as draft.`;
+      case "trip.published":
+        return `${actor} published the trip.`;
+      case "trip.unpublished":
+        return `${actor} unpublished the trip.`;
+      case "trip.member.upserted":
+        return `${actor} updated trip members.`;
+      case "trip.member.removed":
+        return `${actor} removed a member.`;
+      case "trip.invite.created":
+        return `${actor} invited a member.`;
+      case "trip.invite.revoked":
+        return `${actor} revoked an invite.`;
+      case "trip.invite.accepted":
+        return `${actor} accepted an invite.`;
+      default:
+        return actorName
+          ? `Trip changed by ${actorName}.`
+          : "Trip changed by a collaborator.";
+    }
+  };
+
+  const normalizeDayPlans = useCallback(
+    (allWaypoints: WaypointData[], plans: DayPlan[]) => {
+      const validIds = new Set(allWaypoints.map((wp) => wp.id));
+      const seen = new Set<string>();
+
+      const cleaned = plans
+        .map((plan) => {
+          const uniqueValidIds = plan.waypointIds.filter((id) => {
+            if (!validIds.has(id) || seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+          return {
+            day: plan.day,
+            waypointIds: uniqueValidIds,
+            estimatedTravelMinutes: Math.max(0, Math.round(plan.estimatedTravelMinutes || 0)),
+          };
+        })
+        .filter((plan) => plan.waypointIds.length > 0);
+
+      const missingIds = allWaypoints
+        .map((wp) => wp.id)
+        .filter((id) => !seen.has(id));
+
+      if (cleaned.length === 0 && allWaypoints.length > 0) {
+        return [
+          {
+            day: 1,
+            waypointIds: allWaypoints.map((wp) => wp.id),
+            estimatedTravelMinutes: 0,
+          },
+        ];
+      }
+
+      if (missingIds.length > 0) {
+        if (cleaned.length === 0) {
+          cleaned.push({
+            day: 1,
+            waypointIds: missingIds,
+            estimatedTravelMinutes: 0,
+          });
+        } else {
+          cleaned[cleaned.length - 1] = {
+            ...cleaned[cleaned.length - 1],
+            waypointIds: [...cleaned[cleaned.length - 1].waypointIds, ...missingIds],
+          };
+        }
+      }
+
+      return cleaned.map((plan, index) => ({ ...plan, day: index + 1 }));
+    },
+    []
+  );
+
+  const formatClock = (minutes: number) => {
+    const clamped = Math.max(0, Math.min(23 * 60 + 59, minutes));
+    const hrs = Math.floor(clamped / 60)
+      .toString()
+      .padStart(2, "0");
+    const mins = (clamped % 60).toString().padStart(2, "0");
+    return `${hrs}:${mins}`;
+  };
+
+  const parseClock = (value: string) => {
+    const [hrs, mins] = value.split(":").map((v) => Number(v));
+    if (!Number.isFinite(hrs) || !Number.isFinite(mins)) return null;
+    return Math.max(0, Math.min(23 * 60 + 59, hrs * 60 + mins));
+  };
+
+  const formatMinutes = (minutes: number) => {
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (hrs === 0) return `${mins}m`;
+    if (mins === 0) return `${hrs}h`;
+    return `${hrs}h ${mins}m`;
+  };
+
+  const getDayVisitMinutes = (dayPlan: DayPlan) =>
+    dayPlan.waypointIds.length * defaultVisitMinutes;
+
+  const getDayTotalMinutes = (dayPlan: DayPlan) =>
+    dayPlan.estimatedTravelMinutes + getDayVisitMinutes(dayPlan);
+
+  const createSnapshot = (
+    currentWaypoints: WaypointData[],
+    days: DayPlan[],
+    summary: string
+  ): OptimizationSnapshot => ({
+    waypoints: currentWaypoints.map((w) => ({ ...w })),
+    days: days.map((d) => ({
+      day: d.day,
+      waypointIds: [...d.waypointIds],
+      estimatedTravelMinutes: d.estimatedTravelMinutes,
+    })),
+    summary,
+  });
+
+  const applySnapshot = (snapshot: OptimizationSnapshot) => {
+    reorderWaypoints(snapshot.waypoints);
+    setOptimizeDays(snapshot.days);
+    setOptimizeSummary(snapshot.summary);
+  };
+  useEffect(() => {
+    setOptimizeDays((prev) => normalizeDayPlans(waypoints, prev));
+  }, [waypoints, normalizeDayPlans]);
+
+  useEffect(() => {
+    setVisitMinutesByWaypointId((prev) => {
+      const next: Record<string, number> = {};
+      waypoints.forEach((wp) => {
+        next[wp.id] = prev[wp.id] ?? wp.visitMinutes ?? defaultVisitMinutes;
+      });
+      return next;
+    });
+    setTimeWindowsByWaypointId((prev) => {
+      const next: Record<string, { openMinutes: number; closeMinutes: number }> = {};
+      waypoints.forEach((wp) => {
+        next[wp.id] = prev[wp.id] ?? {
+          openMinutes: wp.openMinutes ?? 0,
+          closeMinutes: wp.closeMinutes ?? 23 * 60 + 59,
+        };
+      });
+      return next;
+    });
+  }, [waypoints, defaultVisitMinutes]);
+
 
   // Fetch route whenever waypoints change
   const fetchRoute = useCallback(async () => {
@@ -93,6 +331,15 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     if (!tripId) {
       resetTrip();
       setTripId(null);
+      setShowDayPlanner(false);
+      setDayStartMinutes(9 * 60);
+      setDayEndMinutes(20 * 60);
+      setDefaultVisitMinutes(60);
+      setOptimizeDays([]);
+      setOptimizeSummary("");
+      setOptimizationConflicts([]);
+      setOptimizationHistory([]);
+      setOptimizationBaseline(null);
       return;
     }
     setTripId(tripId);
@@ -104,22 +351,150 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
           resetTrip();
           setTripId(tripId);
           setTripName(data.name);
-          data.waypoints
-            .sort((a: { order: number }, b: { order: number }) => a.order - b.order)
-            .forEach((wp: { name: string; lat: number; lng: number }) => {
-              useTripStore.getState().addWaypoint({
+          if (typeof data.optimizerDayStartMinutes === "number") {
+            setDayStartMinutes(data.optimizerDayStartMinutes);
+          }
+          if (typeof data.optimizerDayEndMinutes === "number") {
+            setDayEndMinutes(data.optimizerDayEndMinutes);
+          }
+          if (typeof data.optimizerDefaultVisitMinutes === "number") {
+            setDefaultVisitMinutes(data.optimizerDefaultVisitMinutes);
+          }
+          setOptimizationHistory([]);
+          setOptimizationBaseline(null);
+          setShowDayPlanner(false);
+          setOptimizationConflicts([]);
+          setCurrentUserRole((data.currentUserRole as TripRole) || "OWNER");
+          setTripStatus((data.status as TripStatus) || "DRAFT");
+          setMemberCount(
+            Array.isArray(data.members)
+              ? data.members.length
+              : typeof data._count?.members === "number"
+                ? data._count.members
+                : 1
+          );
+          lastEventAtRef.current = Date.now();
+          const loadedWaypoints = [...data.waypoints].sort(
+            (a: { order: number }, b: { order: number }) => a.order - b.order
+          );
+          const loadedWaypointIdSet = new Set(
+            loadedWaypoints.map((wp: { id: string }) => wp.id)
+          );
+          reorderWaypoints(
+            loadedWaypoints.map(
+              (wp: {
+                id: string;
+                name: string;
+                notes?: string;
+                lat: number;
+                lng: number;
+                order: number;
+                isLocked?: boolean;
+                visitMinutes?: number;
+                openMinutes?: number;
+                closeMinutes?: number;
+              }) => ({
+                id: wp.id,
                 name: wp.name,
+                notes: wp.notes,
                 lat: wp.lat,
                 lng: wp.lng,
-              });
-            });
+                order: wp.order,
+                isLocked: wp.isLocked ?? false,
+                visitMinutes: wp.visitMinutes,
+                openMinutes: wp.openMinutes,
+                closeMinutes: wp.closeMinutes,
+              })
+            )
+          );
+          setVisitMinutesByWaypointId(
+            loadedWaypoints.reduce((acc: Record<string, number>, wp: {
+              id: string;
+              visitMinutes?: number;
+            }) => {
+              acc[wp.id] = wp.visitMinutes ?? data.optimizerDefaultVisitMinutes ?? 60;
+              return acc;
+            }, {})
+          );
+          setTimeWindowsByWaypointId(
+            loadedWaypoints.reduce(
+              (
+                acc: Record<string, { openMinutes: number; closeMinutes: number }>,
+                wp: { id: string; openMinutes?: number; closeMinutes?: number }
+              ) => {
+                acc[wp.id] = {
+                  openMinutes: wp.openMinutes ?? 0,
+                  closeMinutes: wp.closeMinutes ?? 23 * 60 + 59,
+                };
+                return acc;
+              },
+              {}
+            )
+          );
+          setOptimizeDays(
+            normalizeDayPlans(
+              loadedWaypoints.map(
+                (wp: {
+                  id: string;
+                  name: string;
+                  notes?: string;
+                  lat: number;
+                  lng: number;
+                  order: number;
+                  isLocked?: boolean;
+                }) => ({
+                  id: wp.id,
+                  name: wp.name,
+                  notes: wp.notes,
+                  lat: wp.lat,
+                  lng: wp.lng,
+                  order: wp.order,
+                  isLocked: wp.isLocked ?? false,
+                })
+              ),
+              Array.isArray(data.dayPlans)
+                ? data.dayPlans.map(
+                    (dp: {
+                      day: number;
+                      waypointIndexes: number[];
+                      waypointIds?: string[];
+                      estimatedTravelMinutes: number;
+                    }) => ({
+                      day: dp.day,
+                      waypointIds:
+                        dp.waypointIds &&
+                        dp.waypointIds.length > 0 &&
+                        dp.waypointIds.every((id) => loadedWaypointIdSet.has(id))
+                          ? dp.waypointIds
+                          : (dp.waypointIndexes || [])
+                              .map((idx) => loadedWaypoints[idx]?.id)
+                              .filter(Boolean),
+                      estimatedTravelMinutes: dp.estimatedTravelMinutes || 0,
+                    })
+                  )
+                : []
+            )
+          );
+          if (Array.isArray(data.dayPlans) && data.dayPlans.length > 0) {
+            setShowDayPlanner(true);
+          }
         }
       })
       .catch(() => {});
-  }, [tripId, setTripId, setTripName, resetTrip]);
+  }, [
+    tripId,
+    setTripId,
+    setTripName,
+    resetTrip,
+    reorderWaypoints,
+    normalizeDayPlans,
+    setDayStartMinutes,
+    setDayEndMinutes,
+    setDefaultVisitMinutes,
+  ]);
 
   const handleSave = async () => {
-    if (!session?.user) return;
+    if (!session?.user || !canEditTrip) return;
     setSaving(true);
     setSaved(false);
     setSaveError("");
@@ -127,11 +502,31 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
       const body = {
         name: tripName,
         waypoints: waypoints.map((w) => ({
+          id: w.id,
           name: w.name,
+          notes: w.notes || "",
           lat: w.lat,
           lng: w.lng,
           order: w.order,
+          isLocked: w.isLocked ?? false,
+          visitMinutes: visitMinutesByWaypointId[w.id] ?? w.visitMinutes ?? defaultVisitMinutes,
+          openMinutes: timeWindowsByWaypointId[w.id]?.openMinutes ?? w.openMinutes ?? 0,
+          closeMinutes:
+            timeWindowsByWaypointId[w.id]?.closeMinutes ?? w.closeMinutes ?? 23 * 60 + 59,
         })),
+        dayPlans: optimizeDays.map((dp) => ({
+          day: dp.day,
+          waypointIds: dp.waypointIds,
+          waypointIndexes: dp.waypointIds
+            .map((id) => waypoints.findIndex((w) => w.id === id))
+            .filter((idx) => idx >= 0),
+          estimatedTravelMinutes: dp.estimatedTravelMinutes,
+        })),
+        optimizationSettings: {
+          dayStartMinutes,
+          dayEndMinutes,
+          defaultVisitMinutes,
+        },
       };
 
       const currentTripId = useTripStore.getState().tripId;
@@ -147,10 +542,13 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
       if (res.ok) {
         const data = await res.json();
         setTripId(data.id);
+        if (data.currentUserRole) setCurrentUserRole(data.currentUserRole as TripRole);
+        if (data.status) setTripStatus(data.status as TripStatus);
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
       } else {
-        setSaveError("Failed to save trip");
+        const errorData = await res.json().catch(() => null);
+        setSaveError(errorData?.error || "Failed to save trip");
         setTimeout(() => setSaveError(""), 4000);
       }
     } catch {
@@ -160,6 +558,190 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
       setSaving(false);
     }
   };
+
+  const handleFinalize = async () => {
+    const currentTripId = useTripStore.getState().tripId;
+    if (!currentTripId || !canManageTrip) return;
+    const res = await fetch(`/api/trips/${currentTripId}/finalize`, { method: "POST" });
+    if (res.ok) {
+      setTripStatus("FINALIZED");
+    }
+  };
+
+  const handlePublish = async () => {
+    const currentTripId = useTripStore.getState().tripId;
+    if (!currentTripId || !canManageTrip) return;
+    await fetch(`/api/trips/${currentTripId}/publish`, { method: "POST" });
+  };
+
+  const handleExportPdf = async () => {
+    const currentTripId = useTripStore.getState().tripId;
+    if (!currentTripId) return;
+    window.open(`/api/trips/${currentTripId}/export/pdf`, "_blank", "noopener,noreferrer");
+  };
+
+  const handleOptimize = async () => {
+    if (waypoints.length < 3) return;
+    setOptimizing(true);
+    setOptimizationConflicts([]);
+    const previous = createSnapshot(waypoints, optimizeDays, optimizeSummary);
+    try {
+      const optimized = await optimizeWaypoints(
+        waypoints,
+        true,
+        true,
+        dayStartMinutes,
+        dayEndMinutes,
+        defaultVisitMinutes,
+        waypoints.filter((wp) => wp.isLocked).map((wp) => wp.id),
+        {},
+        timeWindowsByWaypointId
+      );
+      if (optimized?.waypoints) {
+        setShowDayPlanner(true);
+        if (optimized.days.length > 0) {
+          setExpandedDay(1);
+        }
+        if (!optimizationBaseline) {
+          setOptimizationBaseline(previous);
+        }
+        setOptimizationHistory((prev) => [...prev, previous]);
+        reorderWaypoints(optimized.waypoints);
+        if (optimized.days.length > 0) {
+          setOptimizeDays(
+            normalizeDayPlans(
+              optimized.waypoints,
+              optimized.days.map((dayPlan) => ({
+                day: dayPlan.day,
+                waypointIds: dayPlan.waypointIndexes
+                  .map((idx) => optimized.waypoints[idx]?.id)
+                  .filter(Boolean),
+                estimatedTravelMinutes: dayPlan.estimatedTravelMinutes,
+              }))
+            )
+          );
+          setOptimizeSummary(
+            `Optimized into ${optimized.days.length} day${
+              optimized.days.length !== 1 ? "s" : ""
+            }`
+          );
+        } else {
+          setOptimizeDays([]);
+          setOptimizeSummary("Route optimized");
+        }
+        if (optimized.conflicts.length > 0) {
+          setOptimizationConflicts(optimized.conflicts.map((conflict) => conflict.message));
+        }
+      }
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
+  const handleUndoOptimization = () => {
+    if (optimizationHistory.length === 0) return;
+    const previous = optimizationHistory[optimizationHistory.length - 1];
+    applySnapshot(previous);
+    setOptimizationConflicts([]);
+    setOptimizationHistory((prev) => prev.slice(0, -1));
+    if (optimizationHistory.length === 1) {
+      setOptimizationBaseline(null);
+    }
+  };
+
+  const handleResetAllOptimizations = () => {
+    if (!optimizationBaseline) return;
+    applySnapshot(optimizationBaseline);
+    setOptimizationConflicts([]);
+    setOptimizationHistory([]);
+    setOptimizationBaseline(null);
+  };
+
+  const updateDayPlans = (updater: (prev: DayPlan[]) => DayPlan[]) => {
+    setOptimizeDays((prev) => normalizeDayPlans(waypoints, updater(prev)));
+  };
+
+  const moveWaypointWithinDay = (
+    dayNumber: number,
+    waypointId: string,
+    direction: "up" | "down"
+  ) => {
+    updateDayPlans((prev) =>
+      prev.map((plan) => {
+        if (plan.day !== dayNumber) return plan;
+        const idx = plan.waypointIds.indexOf(waypointId);
+        if (idx === -1) return plan;
+        const swapWith = direction === "up" ? idx - 1 : idx + 1;
+        if (swapWith < 0 || swapWith >= plan.waypointIds.length) return plan;
+        const next = [...plan.waypointIds];
+        [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+        return { ...plan, waypointIds: next };
+      })
+    );
+  };
+
+  const moveWaypointAcrossDays = (
+    dayNumber: number,
+    waypointId: string,
+    direction: "prev" | "next"
+  ) => {
+    updateDayPlans((prev) => {
+      const sourceIdx = prev.findIndex((plan) => plan.day === dayNumber);
+      if (sourceIdx === -1) return prev;
+      const targetIdx = direction === "prev" ? sourceIdx - 1 : sourceIdx + 1;
+      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+
+      const next = prev.map((plan) => ({ ...plan, waypointIds: [...plan.waypointIds] }));
+      next[sourceIdx].waypointIds = next[sourceIdx].waypointIds.filter((id) => id !== waypointId);
+      next[targetIdx].waypointIds.push(waypointId);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!tripId || !session?.user?.id) return;
+    const stream = new EventSource(
+      `/api/trips/${tripId}/events?since=${lastEventAtRef.current || 0}`
+    );
+    const handleTripEvent = (event: Event) => {
+      const messageEvent = event as MessageEvent<string>;
+      let actorId: string | undefined;
+      let type: string | undefined;
+      let actorName: string | undefined;
+      try {
+        const parsed = JSON.parse(messageEvent.data) as {
+          actorId?: string;
+          type?: string;
+          actorName?: string;
+          payload?: { actorName?: string };
+        };
+        actorId = parsed.actorId;
+        type = parsed.type;
+        actorName = parsed.payload?.actorName || parsed.actorName;
+      } catch {
+        // Ignore parse errors; sync fetch still runs below.
+      }
+      if (actorId && actorId !== session.user.id) {
+        setLiveCollabToast(getCollabToastMessage(type, actorName));
+        window.setTimeout(() => setLiveCollabToast(""), 2200);
+      }
+      lastEventAtRef.current = Date.now();
+      fetch(`/api/trips/${tripId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          if (data.status) setTripStatus(data.status as TripStatus);
+          if (data.currentUserRole) setCurrentUserRole(data.currentUserRole as TripRole);
+          if (Array.isArray(data.members)) setMemberCount(data.members.length);
+        })
+        .catch(() => {});
+    };
+    stream.addEventListener("trip_event", handleTripEvent);
+    return () => {
+      stream.removeEventListener("trip_event", handleTripEvent);
+      stream.close();
+    };
+  }, [tripId, session?.user?.id]);
 
   if (!sidebarOpen) {
     return (
@@ -233,7 +815,9 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
             ) : (
               <button
                 className="text-sm font-semibold truncate flex items-center gap-1 hover:text-blue-600"
+                disabled={!canEditTrip}
                 onClick={() => {
+                  if (!canEditTrip) return;
                   setNameInput(tripName);
                   setEditingName(true);
                 }}
@@ -254,12 +838,25 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
         </div>
 
         {session?.user && (
-          <div className="flex items-center gap-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Badge variant={tripStatus === "FINALIZED" ? "default" : "secondary"}>
+                {tripStatus === "FINALIZED" ? "Finalized" : "Draft"}
+              </Badge>
+              <Badge variant="outline">
+                {currentUserRole}
+              </Badge>
+              <Badge variant="outline" className="gap-1">
+                <Users className="h-3 w-3" />
+                {memberCount}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-2">
             <Button
               onClick={handleSave}
-              disabled={saving || waypoints.length === 0}
+              disabled={saving || waypoints.length === 0 || !canEditTrip}
               size="sm"
-              className="flex-1 gap-1.5 min-h-9 touch-manipulation"
+              className="w-full gap-1.5 min-h-9 touch-manipulation"
               variant={saved ? "outline" : "default"}
             >
               {saving ? (
@@ -271,14 +868,98 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
               )}
               {saving ? "Saving..." : saved ? "Saved!" : "Save Trip"}
             </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setMembersOpen(true)}
+                disabled={!tripId}
+                className="gap-1.5"
+              >
+                <Users className="h-4 w-4" />
+                Members
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleExportPdf}
+                disabled={!tripId || tripStatus !== "FINALIZED"}
+                className="gap-1.5"
+              >
+                <FileDown className="h-4 w-4" />
+                Export PDF
+              </Button>
+            </div>
+            {canManageTrip && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleFinalize}
+                  disabled={!tripId || tripStatus === "FINALIZED"}
+                >
+                  Finalize Plan
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handlePublish}
+                  disabled={!tripId || tripStatus !== "FINALIZED"}
+                  className="gap-1.5"
+                >
+                  <Globe className="h-4 w-4" />
+                  Publish
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+        {showDayPlanner && optimizationHistory.length > 0 && (
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={handleUndoOptimization}
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 min-h-8"
+            >
+              <Undo2 className="h-4 w-4" />
+              Undo last optimize
+            </Button>
+            <Button
+              onClick={handleResetAllOptimizations}
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 min-h-8 text-amber-700 hover:text-amber-800"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset all
+            </Button>
           </div>
         )}
 
         {saveError && (
           <p className="text-xs text-red-500">{saveError}</p>
         )}
+        {optimizeSummary && (
+          <p className="text-xs text-green-600">{optimizeSummary}</p>
+        )}
+        {optimizationConflicts.length > 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2">
+            <p className="text-xs font-medium text-amber-900 mb-1">
+              Scheduling conflicts ({optimizationConflicts.length})
+            </p>
+            <div className="space-y-1">
+              {optimizationConflicts.slice(0, 4).map((message, index) => (
+                <p key={`${message}-${index}`} className="text-[11px] text-amber-800">
+                  - {message}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
 
-        <SearchInput />
+        <SearchInput disabled={!canEditTrip} />
       </div>
 
       {/* Content - scrollable */}
@@ -289,9 +970,52 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
               <MapPin className="h-3.5 w-3.5" />
               Route
             </h3>
-            <WaypointList />
+            <WaypointList disabled={!canEditTrip} />
             <Separator className="my-4" />
             <FilterPanel />
+            {waypoints.length >= 3 && (
+              <>
+                <Separator className="my-4" />
+                <div className="rounded-md border bg-blue-50/60 p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">
+                      Day-wise Planning
+                    </p>
+                    {showDayPlanner && optimizeDays.length > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] font-medium bg-emerald-100 text-emerald-700 border-emerald-200"
+                      >
+                        Done planning · {optimizeDays.length} day
+                        {optimizeDays.length !== 1 ? "s" : ""}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Build your route first. Then generate a day-by-day plan like TripAdvisor
+                    using opening hours and nearest-stop sequencing.
+                  </p>
+                  <Button
+                    onClick={async () => {
+                      setDayPlannerOpen(true);
+                      if (!showDayPlanner && canEditTrip) {
+                        await handleOptimize();
+                      }
+                    }}
+                    disabled={optimizing || !canEditTrip}
+                    size="sm"
+                    className="w-full gap-2"
+                  >
+                    {optimizing ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    {showDayPlanner ? "Re-generate Day Plan" : "Plan Route Day-wise"}
+                  </Button>
+                </div>
+              </>
+            )}
           </section>
         </div>
       </div>
@@ -302,6 +1026,241 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
           poi={selectedPOI}
           onClose={() => setSelectedPOI(null)}
         />
+      )}
+      <Sheet open={dayPlannerOpen} onOpenChange={setDayPlannerOpen}>
+        <SheetContent side="right" className="sm:max-w-lg w-[92vw]">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <CalendarDays className="h-4 w-4" />
+              Day-wise Planner
+            </SheetTitle>
+            <SheetDescription>
+              Adjust day constraints and generate itinerary grouped by opening hours
+              and nearest stops.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4 space-y-3 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-[11px] text-muted-foreground mb-1">Day start</p>
+                <Input
+                  type="time"
+                  className="h-8 text-xs"
+                  value={formatClock(dayStartMinutes)}
+                  onChange={(e) => {
+                    if (!canEditTrip) return;
+                    const next = parseClock(e.target.value);
+                    if (next === null) return;
+                    setDayStartMinutes(Math.min(next, dayEndMinutes - 30));
+                  }}
+                />
+              </div>
+              <div>
+                <p className="text-[11px] text-muted-foreground mb-1">Day end</p>
+                <Input
+                  type="time"
+                  className="h-8 text-xs"
+                  value={formatClock(dayEndMinutes)}
+                  onChange={(e) => {
+                    if (!canEditTrip) return;
+                    const next = parseClock(e.target.value);
+                    if (next === null) return;
+                    setDayEndMinutes(Math.max(next, dayStartMinutes + 30));
+                  }}
+                />
+              </div>
+              <div>
+                <p className="text-[11px] text-muted-foreground mb-1">Visit min/stop</p>
+                <Input
+                  type="number"
+                  min={5}
+                  step={5}
+                  className="h-8 text-xs"
+                  value={defaultVisitMinutes}
+                  onChange={(e) =>
+                    canEditTrip &&
+                    setDefaultVisitMinutes(Math.max(5, Number(e.target.value) || 60))
+                  }
+                  disabled={!canEditTrip}
+                />
+              </div>
+            </div>
+            <Button
+              onClick={handleOptimize}
+              disabled={optimizing || waypoints.length < 3 || !canEditTrip}
+              className="w-full gap-2"
+            >
+              {optimizing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              Re-generate Day Plan
+            </Button>
+            {showDayPlanner && optimizeDays.length > 0 ? (
+              <div className="space-y-2">
+                {optimizeDays.map((dayPlan) => (
+                  <div key={dayPlan.day} className="rounded-md border p-2 space-y-2">
+                    <button
+                      className="w-full flex items-center justify-between text-left"
+                      onClick={() =>
+                        setExpandedDay((prev) => (prev === dayPlan.day ? null : dayPlan.day))
+                      }
+                    >
+                      <div>
+                        <p className="text-sm font-medium">Day {dayPlan.day}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {dayPlan.waypointIds.length} stop
+                          {dayPlan.waypointIds.length !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <p className="text-xs text-muted-foreground cursor-help">
+                              {formatMinutes(getDayTotalMinutes(dayPlan))} total
+                            </p>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            Total time = travel + per-stop visit duration
+                          </TooltipContent>
+                        </Tooltip>
+                        {expandedDay === dayPlan.day ? (
+                          <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </div>
+                    </button>
+                    {expandedDay === dayPlan.day ? (
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground">
+                          {formatMinutes(dayPlan.estimatedTravelMinutes)} travel +{" "}
+                          {formatMinutes(getDayVisitMinutes(dayPlan))} visit
+                        </p>
+                        {dayPlan.waypointIds.map((id, idx) => {
+                          const wp = waypoints.find((w) => w.id === id);
+                          if (!wp) return null;
+                          return (
+                            <div
+                              key={id}
+                              className="rounded border bg-muted/30 px-2 py-1.5 space-y-1.5"
+                            >
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs flex-1 truncate">{wp.name}</p>
+                                <div className="flex items-center gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() =>
+                                      moveWaypointAcrossDays(dayPlan.day, id, "prev")
+                                    }
+                                    disabled={dayPlan.day === 1 || !canEditTrip}
+                                    title="Move to previous day"
+                                  >
+                                    <ChevronLeft className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() =>
+                                      moveWaypointWithinDay(dayPlan.day, id, "up")
+                                    }
+                                    disabled={idx === 0 || !canEditTrip}
+                                    title="Move up in day"
+                                  >
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() =>
+                                      moveWaypointWithinDay(dayPlan.day, id, "down")
+                                    }
+                                    disabled={
+                                      idx === dayPlan.waypointIds.length - 1 || !canEditTrip
+                                    }
+                                    title="Move down in day"
+                                  >
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() =>
+                                      moveWaypointAcrossDays(dayPlan.day, id, "next")
+                                    }
+                                    disabled={
+                                      dayPlan.day === optimizeDays.length || !canEditTrip
+                                    }
+                                    title="Move to next day"
+                                  >
+                                    <ChevronRight className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                              <Input
+                                value={wp.notes || ""}
+                                placeholder="Add note for this day plan stop..."
+                                className="h-7 text-xs"
+                                onChange={(e) =>
+                                  updateWaypoint(id, { notes: e.target.value })
+                                }
+                                disabled={!canEditTrip}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground line-clamp-2">
+                        {dayPlan.waypointIds
+                          .map((id) => waypoints.find((w) => w.id === id)?.name)
+                          .filter(Boolean)
+                          .join(" -> ")}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No day plan generated yet. Click re-generate to build one.
+              </p>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+      <Sheet open={membersOpen} onOpenChange={setMembersOpen}>
+        <SheetContent side="right" className="sm:max-w-md w-[90vw]">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Trip Members
+            </SheetTitle>
+            <SheetDescription>
+              Invite editors/viewers and manage collaboration access.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            {tripId ? (
+              <TripMembersPanel tripId={tripId} canManage={canManageTrip} />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Save the trip first to invite collaborators.
+              </p>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+      {liveCollabToast && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[70] rounded-md bg-gray-900/95 text-white text-xs px-3 py-2 shadow-lg">
+          {liveCollabToast}
+        </div>
       )}
     </div>
     </>

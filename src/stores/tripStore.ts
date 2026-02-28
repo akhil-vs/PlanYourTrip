@@ -3,9 +3,14 @@ import { create } from "zustand";
 export interface WaypointData {
   id: string;
   name: string;
+  notes?: string;
   lat: number;
   lng: number;
   order: number;
+  isLocked?: boolean;
+  visitMinutes?: number;
+  openMinutes?: number;
+  closeMinutes?: number;
 }
 
 export interface POI {
@@ -20,6 +25,7 @@ export interface POI {
   url?: string;
   address?: string;
   rating?: number;
+  openingHours?: string;
   source: "opentripmap" | "geoapify";
 }
 
@@ -48,11 +54,25 @@ interface TripState {
 
   setTripId: (id: string | null) => void;
   setTripName: (name: string) => void;
-  addWaypoint: (wp: Omit<WaypointData, "id" | "order">) => void;
+  addWaypoint: (
+    wp: Omit<WaypointData, "id" | "order"> & {
+      isLocked?: boolean;
+      visitMinutes?: number;
+      openMinutes?: number;
+      closeMinutes?: number;
+    }
+  ) => void;
   removeWaypoint: (id: string) => void;
   reorderWaypoints: (waypoints: WaypointData[]) => void;
   updateWaypoint: (id: string, data: Partial<WaypointData>) => void;
-  insertWaypointNear: (wp: Omit<WaypointData, "id" | "order">) => void;
+  insertWaypointNear: (
+    wp: Omit<WaypointData, "id" | "order"> & {
+      isLocked?: boolean;
+      visitMinutes?: number;
+      openMinutes?: number;
+      closeMinutes?: number;
+    }
+  ) => void;
   clearWaypoints: () => void;
   setRoute: (route: RouteInfo | null) => void;
   setAttractions: (pois: POI[]) => void;
@@ -89,6 +109,10 @@ export const useTripStore = create<TripState>((set, get) => ({
       ...wp,
       id: `wp-${++waypointCounter}-${Date.now()}`,
       order: waypoints.length,
+      isLocked: wp.isLocked ?? false,
+      visitMinutes: wp.visitMinutes ?? 60,
+      openMinutes: wp.openMinutes ?? 0,
+      closeMinutes: wp.closeMinutes ?? 23 * 60 + 59,
     };
     set({ waypoints: [...waypoints, newWp] });
   },
@@ -134,6 +158,10 @@ export const useTripStore = create<TripState>((set, get) => ({
       ...wp,
       id: `wp-${++waypointCounter}-${Date.now()}`,
       order: insertIdx,
+      isLocked: wp.isLocked ?? false,
+      visitMinutes: wp.visitMinutes ?? 60,
+      openMinutes: wp.openMinutes ?? 0,
+      closeMinutes: wp.closeMinutes ?? 23 * 60 + 59,
     };
     const updated = [...waypoints];
     updated.splice(insertIdx, 0, newWp);

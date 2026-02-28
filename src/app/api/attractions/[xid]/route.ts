@@ -49,6 +49,10 @@ export async function GET(
       lng: data.point?.lon,
       kinds: data.kinds || "",
       rating: data.rate || 0,
+      openingHours:
+        typeof data.opening_hours === "string"
+          ? data.opening_hours
+          : data.opening_hours?.hours || "",
     });
   } catch {
     return NextResponse.json(

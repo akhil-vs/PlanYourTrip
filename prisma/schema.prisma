@@ -7,35 +7,71 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum TripStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum TripMemberRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum TripInviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
 model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  trips        Trip[]
-  createdAt    DateTime @default(now())
+  id            String       @id @default(cuid())
+  name          String
+  email         String       @unique
+  passwordHash  String
+  trips         Trip[]
+  tripMembers   TripMember[]
+  sentInvites   TripInvite[] @relation("TripInviteSender")
+  templates     TripTemplate[]
+  createdAt     DateTime     @default(now())
 }
 
 model Trip {
-  id          String       @id @default(cuid())
-  name        String
-  description String?
-  user        User         @relation(fields: [userId], references: [id])
-  userId      String
-  waypoints   Waypoint[]
-  savedPlaces SavedPlace[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id                         String       @id @default(cuid())
+  name                       String
+  description                String?
+  status                     TripStatus   @default(DRAFT)
+  isPublic                   Boolean      @default(false)
+  shareId                    String       @unique @default(cuid())
+  optimizerDayStartMinutes   Int          @default(540)
+  optimizerDayEndMinutes     Int          @default(1200)
+  optimizerDefaultVisitMinutes Int @default(60)
+  user                       User         @relation(fields: [userId], references: [id])
+  userId                     String
+  members                    TripMember[]
+  invites                    TripInvite[]
+  changeEvents               TripChangeEvent[]
+  waypoints                  Waypoint[]
+  dayPlans                   TripDayPlan[]
+  savedPlaces                SavedPlace[]
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
 }
 
 model Waypoint {
-  id     String @id @default(cuid())
-  name   String
-  lat    Float
-  lng    Float
-  order  Int
-  trip   Trip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
-  tripId String
+  id           String @id @default(cuid())
+  name         String
+  notes        String?
+  lat          Float
+  lng          Float
+  order        Int
+  isLocked     Boolean @default(false)
+  visitMinutes Int    @default(60)
+  openMinutes  Int    @default(0)
+  closeMinutes Int    @default(1439)
+  trip         Trip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId       String
 }
 
 model SavedPlace {
@@ -48,4 +84,78 @@ model SavedPlace {
   notes      String?
   trip       Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
   tripId     String
+}
+
+model TripDayPlan {
+  id                   String @id @default(cuid())
+  day                  Int
+  waypointIndexes      Int[]
+  waypointIds          String[] @default([])
+  estimatedTravelMinutes Int
+  trip                 Trip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId               String
+}
+
+model TripMember {
+  id        String         @id @default(cuid())
+  role      TripMemberRole @default(VIEWER)
+  trip      Trip           @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([tripId, userId])
+}
+
+model TripInvite {
+  id         String           @id @default(cuid())
+  email      String
+  token      String           @unique
+  role       TripMemberRole   @default(EDITOR)
+  status     TripInviteStatus @default(PENDING)
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  trip       Trip             @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId     String
+  sender     User             @relation("TripInviteSender", fields: [senderId], references: [id], onDelete: Cascade)
+  senderId   String
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([tripId, status])
+}
+
+model TripChangeEvent {
+  id        String   @id @default(cuid())
+  eventType String
+  payload   Json
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId    String
+  actorId   String?
+  createdAt DateTime @default(now())
+
+  @@index([tripId, createdAt])
+}
+
+model TripTemplate {
+  id          String             @id @default(cuid())
+  name        String
+  description String?
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  waypoints   TemplateWaypoint[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model TemplateWaypoint {
+  id         String       @id @default(cuid())
+  name       String
+  lat        Float
+  lng        Float
+  order      Int
+  template   TripTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateId String
 }

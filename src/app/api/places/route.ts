@@ -62,8 +62,10 @@ export async function GET(req: NextRequest) {
               rating?: number;
               image?: string;
               website?: string;
+              opening_hours?: string;
             };
           };
+          opening_hours?: string;
         };
       }) => {
         const p = f.properties;
@@ -79,6 +81,7 @@ export async function GET(req: NextRequest) {
           address: p.address_line2 || p.address_line1 || "",
           rating: raw?.stars || raw?.rating || 0,
           url: raw?.website || "",
+          openingHours: p.opening_hours || raw?.opening_hours || "",
           source: "geoapify" as const,
         };
       }

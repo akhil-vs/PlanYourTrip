@@ -5,7 +5,10 @@ import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 
 export function FilterPanel() {
-  const { searchRadius, setSearchRadius } = useMapStore();
+  const {
+    searchRadius,
+    setSearchRadius,
+  } = useMapStore();
 
   return (
     <div className="space-y-5">
