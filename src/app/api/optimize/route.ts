@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { canUseAdvancedOptimization } from "@/lib/subscription";
 
 interface OptimizerWaypoint {
   id?: string;
@@ -6,6 +8,10 @@ interface OptimizerWaypoint {
   lat: number;
   lng: number;
   order?: number;
+  isTransitSplit?: boolean;
+  visitMinutes?: number;
+  openMinutes?: number;
+  closeMinutes?: number;
 }
 
 interface DayPlan {
@@ -203,12 +209,29 @@ function optimizeWithLocks(
   return result;
 }
 
+function interpolateWaypoint(
+  from: OptimizerWaypoint,
+  to: OptimizerWaypoint,
+  ratio: number
+): Pick<OptimizerWaypoint, "lat" | "lng"> {
+  return {
+    lat: from.lat + (to.lat - from.lat) * ratio,
+    lng: from.lng + (to.lng - from.lng) * ratio,
+  };
+}
+
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  const advancedOptimizationEnabled = canUseAdvancedOptimization(
+    session?.user?.plan || "FREE"
+  );
   const body = await req.json().catch(() => null);
   const waypoints = (body?.waypoints || []) as OptimizerWaypoint[];
   const fixedStart = body?.fixedStart !== false;
   const fixedEnd = body?.fixedEnd !== false;
-  const travelMode = (body?.travelMode || "driving") as
+  const travelMode = (advancedOptimizationEnabled
+    ? body?.travelMode || "driving"
+    : "driving") as
     | "driving"
     | "walking"
     | "cycling";
@@ -228,6 +251,7 @@ export async function POST(req: NextRequest) {
       : 20 * 60;
   const safeDayEndMinutes = Math.max(dayStartMinutes + 30, dayEndMinutes);
   const visitMinutesByWaypointId =
+    advancedOptimizationEnabled &&
     body?.visitMinutesByWaypointId && typeof body.visitMinutesByWaypointId === "object"
       ? (body.visitMinutesByWaypointId as Record<string, number>)
       : {};
@@ -238,17 +262,19 @@ export async function POST(req: NextRequest) {
       ? Math.max(5, Math.round(body.defaultVisitMinutes))
       : 60;
   const timeWindowsByWaypointId =
+    advancedOptimizationEnabled &&
     body?.timeWindowsByWaypointId && typeof body.timeWindowsByWaypointId === "object"
       ? (body.timeWindowsByWaypointId as Record<
           string,
           { openMinutes?: number; closeMinutes?: number }
         >)
       : {};
-  const lockedWaypointIds = Array.isArray(body?.lockedWaypointIds)
+  const lockedWaypointIds = advancedOptimizationEnabled && Array.isArray(body?.lockedWaypointIds)
     ? (body.lockedWaypointIds as string[]).filter(
         (id) => typeof id === "string" && id.length > 0
       )
     : [];
+  const autoSplitLongTransfers = body?.autoSplitLongTransfers !== false;
 
   if (!Array.isArray(waypoints) || waypoints.length < 2) {
     return NextResponse.json(
@@ -263,13 +289,58 @@ export async function POST(req: NextRequest) {
     fixedEnd,
     new Set(lockedWaypointIds)
   );
-  const optimized = refined.map((wp, i) => ({
+
+  const dailyWindowMinutes = Math.max(30, safeDayEndMinutes - dayStartMinutes);
+  const maxLegMinutesBeforeSplit = Math.max(
+    30,
+    dailyWindowMinutes - Math.min(defaultVisitMinutes, 60)
+  );
+
+  // If one transfer leg is longer than what can fit in a day, add "en-route"
+  // virtual waypoints so itinerary is naturally split across days.
+  const splitAwareRoute: OptimizerWaypoint[] = [];
+  const autoSplitConflicts: OptimizeConflict[] = [];
+  if (autoSplitLongTransfers) {
+    for (let i = 0; i < refined.length; i += 1) {
+      const current = refined[i];
+      splitAwareRoute.push(current);
+      const next = refined[i + 1];
+      if (!next) continue;
+      const legMinutes = estimateLegMinutes(current, next, travelMode);
+      if (legMinutes <= maxLegMinutesBeforeSplit) continue;
+
+      const segments = Math.ceil(legMinutes / maxLegMinutesBeforeSplit);
+      for (let segment = 1; segment < segments; segment += 1) {
+        const ratio = segment / segments;
+        const point = interpolateWaypoint(current, next, ratio);
+        splitAwareRoute.push({
+          id: `transit-${current.id || i}-${next.id || i + 1}-${segment}`,
+          name: `En-route stop ${segment}/${segments - 1}`,
+          lat: point.lat,
+          lng: point.lng,
+          isTransitSplit: true,
+          visitMinutes: 0,
+          openMinutes: 0,
+          closeMinutes: 24 * 60,
+        });
+      }
+      autoSplitConflicts.push({
+        message: `Long transfer from ${current.name} to ${next.name} was split across ${segments} travel segments.`,
+      });
+    }
+  } else {
+    splitAwareRoute.push(...refined);
+  }
+
+  const optimized = splitAwareRoute.map((wp, i) => ({
     ...wp,
     order: i,
   }));
 
   const getVisitMinutes = (wp: OptimizerWaypoint) => {
+    if (wp.isTransitSplit) return 0;
     const raw = wp.id ? visitMinutesByWaypointId[wp.id] : undefined;
+    if (raw === 0) return 0;
     if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
       return Math.max(5, Math.round(raw));
     }
@@ -277,6 +348,9 @@ export async function POST(req: NextRequest) {
   };
 
   const getWindow = (wp: OptimizerWaypoint) => {
+    if (wp.isTransitSplit) {
+      return { openMinutes: 0, closeMinutes: 24 * 60 };
+    }
     const raw = wp.id ? timeWindowsByWaypointId[wp.id] : undefined;
     const openMinutes =
       typeof raw?.openMinutes === "number" && Number.isFinite(raw.openMinutes)
@@ -315,7 +389,7 @@ export async function POST(req: NextRequest) {
   };
 
   const days: DayPlan[] = [];
-  const conflicts: OptimizeConflict[] = [];
+  const conflicts: OptimizeConflict[] = [...autoSplitConflicts];
 
   if (optimized.length > 0) {
     let currentDay = 1;
@@ -340,22 +414,24 @@ export async function POST(req: NextRequest) {
         safeDayEndMinutes
       );
       if (currentIndexes.length > 0 && !fitCurrent.fits) {
-        const dayTravelWithBoundaryLeg =
-          prevInDayIndex !== null ? projectedTravelMinutes : currentTravelMinutes;
         days.push({
           day: currentDay,
           waypointIndexes: currentIndexes,
-          estimatedTravelMinutes: dayTravelWithBoundaryLeg,
+          estimatedTravelMinutes: currentTravelMinutes,
         });
 
         currentDay += 1;
         currentIndexes = [];
         currentTravelMinutes = 0;
         currentClockMinutes = dayStartMinutes;
+        const previousWaypoint = optimized[i - 1];
+        const carryTravelMinutes = previousWaypoint
+          ? estimateLegMinutes(previousWaypoint, waypoint, travelMode)
+          : 0;
         prevInDayIndex = null;
-        legMinutes = 0;
-        projectedTravelMinutes = 0;
-        projectedArrival = currentClockMinutes;
+        legMinutes = carryTravelMinutes;
+        projectedTravelMinutes = carryTravelMinutes;
+        projectedArrival = currentClockMinutes + carryTravelMinutes;
         fitCurrent = canFitWaypointInDay(
           waypoint,
           projectedArrival,

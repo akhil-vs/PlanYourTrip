@@ -25,11 +25,18 @@ enum TripInviteStatus {
   EXPIRED
 }
 
+enum SubscriptionPlan {
+  FREE
+  PRO
+  TEAM
+}
+
 model User {
   id            String       @id @default(cuid())
   name          String
   email         String       @unique
   passwordHash  String
+  plan          SubscriptionPlan @default(FREE)
   trips         Trip[]
   tripMembers   TripMember[]
   sentInvites   TripInvite[] @relation("TripInviteSender")

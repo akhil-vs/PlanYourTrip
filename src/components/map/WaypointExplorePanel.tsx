@@ -39,7 +39,16 @@ interface PlaceDetail {
 
 export function WaypointExplorePanel() {
   const { activeWaypoint, setActiveWaypoint, searchRadius } = useMapStore();
-  const { insertWaypointNear, waypoints, removeWaypoint } = useTripStore();
+  const {
+    insertWaypointNear,
+    waypoints,
+    removeWaypoint,
+    setAttractions,
+    setStays,
+    setFood,
+    setSelectedPOI: setGlobalSelectedPOI,
+    setHoveredPOIId,
+  } = useTripStore();
 
   const [tab, setTab] = useState<ExploreTab>("menu");
   const [results, setResults] = useState<POI[]>([]);
@@ -51,6 +60,15 @@ export function WaypointExplorePanel() {
 
   const wp = activeWaypoint;
 
+  useEffect(() => {
+    if (wp) return;
+    setAttractions([]);
+    setStays([]);
+    setFood([]);
+    setGlobalSelectedPOI(null);
+    setHoveredPOIId(null);
+  }, [wp, setAttractions, setFood, setGlobalSelectedPOI, setHoveredPOIId, setStays]);
+
   const handleClose = () => {
     setActiveWaypoint(null);
     setTab("menu");
@@ -58,15 +76,25 @@ export function WaypointExplorePanel() {
     setSelectedPOI(null);
     setDetail(null);
     setAddedIds(new Set());
+    setAttractions([]);
+    setStays([]);
+    setFood([]);
+    setGlobalSelectedPOI(null);
+    setHoveredPOIId(null);
   };
 
   const handleBack = () => {
     if (selectedPOI) {
       setSelectedPOI(null);
       setDetail(null);
+      setGlobalSelectedPOI(null);
     } else {
       setTab("menu");
       setResults([]);
+      setAttractions([]);
+      setStays([]);
+      setFood([]);
+      setHoveredPOIId(null);
     }
   };
 
@@ -82,6 +110,9 @@ export function WaypointExplorePanel() {
           kinds: "interesting_places",
         });
         setResults(pois);
+        setAttractions(pois);
+        setStays([]);
+        setFood([]);
       } else {
         const category =
           type === "stays" ? "accommodation" : "catering";
@@ -90,13 +121,25 @@ export function WaypointExplorePanel() {
           categories: category,
         });
         setResults(pois);
+        if (type === "stays") {
+          setStays(pois);
+          setAttractions([]);
+          setFood([]);
+        } else {
+          setFood(pois);
+          setAttractions([]);
+          setStays([]);
+        }
       }
     } catch {
       setResults([]);
+      setAttractions([]);
+      setStays([]);
+      setFood([]);
     } finally {
       setLoading(false);
     }
-  }, [wp, searchRadius]);
+  }, [wp, searchRadius, setAttractions, setFood, setStays]);
 
   // Refetch results when search radius changes (while viewing attractions/stays/food)
   useEffect(() => {
@@ -106,6 +149,8 @@ export function WaypointExplorePanel() {
 
   const handleSelectPOI = async (poi: POI) => {
     setSelectedPOI(poi);
+    setGlobalSelectedPOI(poi);
+    setHoveredPOIId(poi.id);
     setDetail(null);
 
     if (poi.source === "opentripmap") {
@@ -344,6 +389,8 @@ export function WaypointExplorePanel() {
                   <div
                     key={poi.id}
                     className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer group transition-colors"
+                    onMouseEnter={() => setHoveredPOIId(poi.id)}
+                    onMouseLeave={() => setHoveredPOIId(null)}
                     onClick={() => handleSelectPOI(poi)}
                   >
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${

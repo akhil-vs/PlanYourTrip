@@ -24,6 +24,8 @@ interface POIMarkersProps {
 export function POIMarkers({ type }: POIMarkersProps) {
   const pois = useTripStore((s) => s[type]);
   const setSelectedPOI = useTripStore((s) => s.setSelectedPOI);
+  const selectedPOI = useTripStore((s) => s.selectedPOI);
+  const hoveredPOIId = useTripStore((s) => s.hoveredPOIId);
   const [popupPOI, setPopupPOI] = useState<POI | null>(null);
 
   const Icon = ICONS[type];
@@ -33,25 +35,32 @@ export function POIMarkers({ type }: POIMarkersProps) {
 
   return (
     <>
-      {visiblePOIs.map((poi) => (
-        <Marker
-          key={poi.id}
-          longitude={poi.lng}
-          latitude={poi.lat}
-          anchor="center"
-          onClick={(e) => {
-            e.originalEvent.stopPropagation();
-            setPopupPOI(poi);
-            setSelectedPOI(poi);
-          }}
-        >
-          <div
-            className={`w-7 h-7 rounded-full ${color.bg} text-white flex items-center justify-center shadow-md border-2 border-white cursor-pointer hover:scale-110 transition-transform`}
+      {visiblePOIs.map((poi) => {
+        const isHighlighted = hoveredPOIId === poi.id || selectedPOI?.id === poi.id;
+        return (
+          <Marker
+            key={poi.id}
+            longitude={poi.lng}
+            latitude={poi.lat}
+            anchor="center"
+            onClick={(e) => {
+              e.originalEvent.stopPropagation();
+              setPopupPOI(poi);
+              setSelectedPOI(poi);
+            }}
           >
-            <Icon className="h-3.5 w-3.5" />
-          </div>
-        </Marker>
-      ))}
+            <div
+              className={`w-7 h-7 rounded-full ${color.bg} text-white flex items-center justify-center shadow-md border-2 cursor-pointer transition-transform ${
+                isHighlighted
+                  ? "scale-125 border-yellow-300 ring-2 ring-yellow-300/60"
+                  : "border-white hover:scale-110"
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+            </div>
+          </Marker>
+        );
+      })}
 
       {popupPOI && (
         <Popup

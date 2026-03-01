@@ -17,6 +17,13 @@ function formatCoordinates(coords: [number, number][]): string {
   return coords.map((c) => c.join(",")).join(";");
 }
 
+function normalizeCoordinates(coords: [number, number][]): [number, number][] {
+  return coords.map(([lng, lat]) => [
+    Number(lng.toFixed(6)),
+    Number(lat.toFixed(6)),
+  ]);
+}
+
 async function fetchMapboxRouteDirect(
   coordinates: string,
   profile: string,
@@ -72,11 +79,13 @@ export async function GET(req: NextRequest) {
       { status: 400 }
     );
   }
+  const normalizedAllCoords = normalizeCoordinates(allCoords);
+  const normalizedCoordinatesParam = formatCoordinates(normalizedAllCoords);
 
-  if (allCoords.length <= MAPBOX_MAX_WAYPOINTS) {
+  if (normalizedAllCoords.length <= MAPBOX_MAX_WAYPOINTS) {
     const getCachedRoute = unstable_cache(
-      () => fetchMapboxRouteDirect(coordinatesParam, mapboxProfile, token),
-      ["directions", coordinatesParam, mapboxProfile],
+      () => fetchMapboxRouteDirect(normalizedCoordinatesParam, mapboxProfile, token),
+      ["directions", normalizedCoordinatesParam, mapboxProfile],
       { revalidate: DIRECTIONS_CACHE_REVALIDATE }
     );
 
@@ -108,8 +117,8 @@ export async function GET(req: NextRequest) {
   // Chunk coordinates for Mapbox 25-waypoint limit (overlap by 1 for continuity)
   const chunks: [number, number][][] = [];
   let offset = 0;
-  while (offset < allCoords.length) {
-    const chunk = allCoords.slice(offset, offset + MAPBOX_MAX_WAYPOINTS);
+  while (offset < normalizedAllCoords.length) {
+    const chunk = normalizedAllCoords.slice(offset, offset + MAPBOX_MAX_WAYPOINTS);
     if (chunk.length >= 2) chunks.push(chunk);
     if (chunk.length < MAPBOX_MAX_WAYPOINTS) break;
     offset += MAPBOX_MAX_WAYPOINTS - 1;

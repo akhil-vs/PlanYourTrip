@@ -51,6 +51,10 @@ import {
   X,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
+import {
+  canUseActivityTimeline,
+  canUseCollaboration,
+} from "@/lib/subscription";
 
 interface PlannerSidebarProps {
   tripId?: string;
@@ -79,6 +83,27 @@ interface TripTimelineEvent {
   payload?: EventPayload;
   actorId?: string;
   createdAt: string;
+}
+
+interface SaveSignatureInput {
+  name: string;
+  waypoints: Array<{
+    id?: string;
+    name: string;
+    notes?: string;
+    lat: number;
+    lng: number;
+    order: number;
+    isLocked?: boolean;
+    isTransitSplit?: boolean;
+    visitMinutes?: number;
+    openMinutes?: number;
+    closeMinutes?: number;
+  }>;
+  dayPlans: Array<{ day: number; waypointIds: string[]; estimatedTravelMinutes: number }>;
+  dayStartMinutes: number;
+  dayEndMinutes: number;
+  defaultVisitMinutes: number;
 }
 
 interface StarterTemplate {
@@ -137,6 +162,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     updateWaypoint,
   } = useTripStore();
   const { data: session } = useSession();
+  const userPlan = session?.user?.plan || "FREE";
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -144,11 +170,13 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
   const [actionNotice, setActionNotice] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(tripName);
+  const [lastSavedSignature, setLastSavedSignature] = useState<string | null>(null);
   const [optimizing, setOptimizing] = useState(false);
   const [optimizeSummary, setOptimizeSummary] = useState("");
   const [optimizeDays, setOptimizeDays] = useState<DayPlan[]>([]);
   const [showDayPlanner, setShowDayPlanner] = useState(false);
   const [dayPlannerOpen, setDayPlannerOpen] = useState(false);
+  const [autoSplitLongTransfers, setAutoSplitLongTransfers] = useState(true);
   const [expandedDay, setExpandedDay] = useState<number | null>(null);
   const [optimizationConflicts, setOptimizationConflicts] = useState<string[]>([]);
   const [visitMinutesByWaypointId, setVisitMinutesByWaypointId] = useState<
@@ -179,6 +207,8 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     (currentUserRole === "OWNER" || currentUserRole === "EDITOR") &&
     tripStatus === "DRAFT";
   const canManageTrip = currentUserRole === "OWNER";
+  const collaborationEnabled = canUseCollaboration(userPlan);
+  const timelineEnabled = canUseActivityTimeline(userPlan);
   const effectiveTripId = tripId ?? activeTripId;
   const lifecycleStage: LifecycleStage = useMemo(() => {
     if (tripStatus === "FINALIZED" && isPublic) return "SHARED";
@@ -288,7 +318,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
   };
 
   const loadActivityHistory = useCallback(async () => {
-    if (!effectiveTripId) return;
+    if (!effectiveTripId || !timelineEnabled) return;
     setActivityLoading(true);
     try {
       const res = await fetch(`/api/trips/${effectiveTripId}/events?mode=history&limit=40`);
@@ -300,7 +330,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     } finally {
       setActivityLoading(false);
     }
-  }, [effectiveTripId]);
+  }, [effectiveTripId, timelineEnabled]);
 
   const dismissOnboarding = () => {
     setShowOnboardingCard(false);
@@ -403,6 +433,72 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     return Math.max(0, Math.min(23 * 60 + 59, hrs * 60 + mins));
   };
 
+  const createSaveSignature = ({
+    name,
+    waypoints: routeWaypoints,
+    dayPlans,
+    dayStartMinutes: startMinutes,
+    dayEndMinutes: endMinutes,
+    defaultVisitMinutes: visitDefaults,
+  }: SaveSignatureInput) =>
+    JSON.stringify({
+      name: name.trim(),
+      waypoints: [...routeWaypoints]
+        .sort((a, b) => a.order - b.order)
+        .map((wp) => ({
+          name: wp.name,
+          notes: wp.notes || "",
+          lat: Number(wp.lat.toFixed(6)),
+          lng: Number(wp.lng.toFixed(6)),
+          order: wp.order,
+          isLocked: wp.isLocked ?? false,
+          isTransitSplit: wp.isTransitSplit ?? false,
+          visitMinutes: wp.visitMinutes ?? visitDefaults,
+          openMinutes: wp.openMinutes ?? 0,
+          closeMinutes: wp.closeMinutes ?? 23 * 60 + 59,
+        })),
+      dayPlans: [...dayPlans]
+        .sort((a, b) => a.day - b.day)
+        .map((dayPlan) => ({
+          day: dayPlan.day,
+          waypointIndexes: dayPlan.waypointIds
+            .map((id) => routeWaypoints.findIndex((wp) => wp.id === id))
+            .filter((idx) => idx >= 0),
+          estimatedTravelMinutes: dayPlan.estimatedTravelMinutes,
+        })),
+      optimizationSettings: {
+        dayStartMinutes: startMinutes,
+        dayEndMinutes: endMinutes,
+        defaultVisitMinutes: visitDefaults,
+      },
+    });
+
+  const currentSaveSignature = useMemo(
+    () =>
+      createSaveSignature({
+        name: tripName,
+        waypoints,
+        dayPlans: optimizeDays,
+        dayStartMinutes,
+        dayEndMinutes,
+        defaultVisitMinutes,
+      }),
+    [
+      tripName,
+      waypoints,
+      optimizeDays,
+      dayStartMinutes,
+      dayEndMinutes,
+      defaultVisitMinutes,
+    ]
+  );
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (!effectiveTripId) return waypoints.length > 0;
+    if (!lastSavedSignature) return true;
+    return currentSaveSignature !== lastSavedSignature;
+  }, [effectiveTripId, waypoints.length, currentSaveSignature, lastSavedSignature]);
+
   const formatMinutes = (minutes: number) => {
     const hrs = Math.floor(minutes / 60);
     const mins = minutes % 60;
@@ -412,7 +508,16 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
   };
 
   const getDayVisitMinutes = (dayPlan: DayPlan) =>
-    dayPlan.waypointIds.length * defaultVisitMinutes;
+    dayPlan.waypointIds.reduce((total, id) => {
+      const wp = waypoints.find((item) => item.id === id);
+      if (!wp) return total;
+      if (wp.isTransitSplit) return total;
+      const visit =
+        typeof wp.visitMinutes === "number" && Number.isFinite(wp.visitMinutes)
+          ? Math.max(0, Math.round(wp.visitMinutes))
+          : defaultVisitMinutes;
+      return total + visit;
+    }, 0);
 
   const getDayTotalMinutes = (dayPlan: DayPlan) =>
     dayPlan.estimatedTravelMinutes + getDayVisitMinutes(dayPlan);
@@ -527,6 +632,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
       setOptimizationConflicts([]);
       setOptimizationHistory([]);
       setOptimizationBaseline(null);
+      setLastSavedSignature(null);
       return;
     }
     setTripId(tripId);
@@ -619,49 +725,92 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
               {}
             )
           );
-          setOptimizeDays(
-            normalizeDayPlans(
-              loadedWaypoints.map(
+          const normalizedLoadedDayPlans = normalizeDayPlans(
+            loadedWaypoints.map(
+              (wp: {
+                id: string;
+                name: string;
+                notes?: string;
+                lat: number;
+                lng: number;
+                order: number;
+                isLocked?: boolean;
+                isTransitSplit?: boolean;
+                visitMinutes?: number;
+                openMinutes?: number;
+                closeMinutes?: number;
+              }) => ({
+                id: wp.id,
+                name: wp.name,
+                notes: wp.notes,
+                lat: wp.lat,
+                lng: wp.lng,
+                order: wp.order,
+                isLocked: wp.isLocked ?? false,
+                isTransitSplit: wp.isTransitSplit ?? false,
+                visitMinutes: wp.visitMinutes,
+                openMinutes: wp.openMinutes,
+                closeMinutes: wp.closeMinutes,
+              })
+            ),
+            Array.isArray(data.dayPlans)
+              ? data.dayPlans.map(
+                  (dp: {
+                    day: number;
+                    waypointIndexes: number[];
+                    waypointIds?: string[];
+                    estimatedTravelMinutes: number;
+                  }) => ({
+                    day: dp.day,
+                    waypointIds:
+                      dp.waypointIds &&
+                      dp.waypointIds.length > 0 &&
+                      dp.waypointIds.every((id) => loadedWaypointIdSet.has(id))
+                        ? dp.waypointIds
+                        : (dp.waypointIndexes || [])
+                            .map((idx) => loadedWaypoints[idx]?.id)
+                            .filter(Boolean),
+                    estimatedTravelMinutes: dp.estimatedTravelMinutes || 0,
+                  })
+                )
+              : []
+          );
+          setOptimizeDays(normalizedLoadedDayPlans);
+          setLastSavedSignature(
+            createSaveSignature({
+              name: data.name || "Untitled Trip",
+              waypoints: loadedWaypoints.map(
                 (wp: {
-                  id: string;
                   name: string;
                   notes?: string;
                   lat: number;
                   lng: number;
                   order: number;
                   isLocked?: boolean;
+                  isTransitSplit?: boolean;
+                  visitMinutes?: number;
+                  openMinutes?: number;
+                  closeMinutes?: number;
                 }) => ({
-                  id: wp.id,
-                  name: wp.name,
-                  notes: wp.notes,
-                  lat: wp.lat,
-                  lng: wp.lng,
-                  order: wp.order,
+                  ...wp,
                   isLocked: wp.isLocked ?? false,
+                  isTransitSplit: wp.isTransitSplit ?? false,
                 })
               ),
-              Array.isArray(data.dayPlans)
-                ? data.dayPlans.map(
-                    (dp: {
-                      day: number;
-                      waypointIndexes: number[];
-                      waypointIds?: string[];
-                      estimatedTravelMinutes: number;
-                    }) => ({
-                      day: dp.day,
-                      waypointIds:
-                        dp.waypointIds &&
-                        dp.waypointIds.length > 0 &&
-                        dp.waypointIds.every((id) => loadedWaypointIdSet.has(id))
-                          ? dp.waypointIds
-                          : (dp.waypointIndexes || [])
-                              .map((idx) => loadedWaypoints[idx]?.id)
-                              .filter(Boolean),
-                      estimatedTravelMinutes: dp.estimatedTravelMinutes || 0,
-                    })
-                  )
-                : []
-            )
+              dayPlans: normalizedLoadedDayPlans,
+              dayStartMinutes:
+                typeof data.optimizerDayStartMinutes === "number"
+                  ? data.optimizerDayStartMinutes
+                  : 9 * 60,
+              dayEndMinutes:
+                typeof data.optimizerDayEndMinutes === "number"
+                  ? data.optimizerDayEndMinutes
+                  : 20 * 60,
+              defaultVisitMinutes:
+                typeof data.optimizerDefaultVisitMinutes === "number"
+                  ? data.optimizerDefaultVisitMinutes
+                  : 60,
+            })
           );
           if (Array.isArray(data.dayPlans) && data.dayPlans.length > 0) {
             setShowDayPlanner(true);
@@ -733,6 +882,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
         if (data.currentUserRole) setCurrentUserRole(data.currentUserRole as TripRole);
         if (data.status) setTripStatus(data.status as TripStatus);
         setIsPublic(Boolean(data.isPublic));
+        setLastSavedSignature(currentSaveSignature);
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
       } else {
@@ -817,7 +967,8 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
         defaultVisitMinutes,
         waypoints.filter((wp) => wp.isLocked).map((wp) => wp.id),
         {},
-        timeWindowsByWaypointId
+        timeWindowsByWaypointId,
+        autoSplitLongTransfers
       );
       if (optimized?.waypoints) {
         setShowDayPlanner(true);
@@ -921,7 +1072,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
   };
 
   useEffect(() => {
-    if (!effectiveTripId || !session?.user?.id) return;
+    if (!effectiveTripId || !session?.user?.id || !timelineEnabled) return;
     const stream = new EventSource(
       `/api/trips/${effectiveTripId}/events?since=${lastEventAtRef.current || 0}`
     );
@@ -992,12 +1143,12 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
       stream.removeEventListener("trip_event", handleTripEvent);
       stream.close();
     };
-  }, [effectiveTripId, session?.user?.id]);
+  }, [effectiveTripId, session?.user?.id, timelineEnabled]);
 
   useEffect(() => {
-    if (!effectiveTripId || !session?.user?.id) return;
+    if (!effectiveTripId || !session?.user?.id || !timelineEnabled) return;
     void loadActivityHistory();
-  }, [effectiveTripId, session?.user?.id, loadActivityHistory]);
+  }, [effectiveTripId, session?.user?.id, loadActivityHistory, timelineEnabled]);
 
   if (!sidebarOpen) {
     return (
@@ -1112,7 +1263,24 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                 {!effectiveTripId ? (
                   <Button
                     onClick={handleSave}
-                    disabled={saving || waypoints.length === 0 || !canEditTrip}
+                    disabled={saving || waypoints.length === 0 || !canEditTrip || !hasUnsavedChanges}
+                    size="sm"
+                    className="w-full gap-1.5 min-h-9 touch-manipulation"
+                    variant={saved ? "outline" : "default"}
+                  >
+                    {saving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : saved ? (
+                      <Check className="h-4 w-4 text-green-600" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    {saving ? "Saving..." : saved ? "Saved!" : "Save itinerary"}
+                  </Button>
+                ) : canEditTrip && hasUnsavedChanges ? (
+                  <Button
+                    onClick={handleSave}
+                    disabled={saving || waypoints.length === 0 || !canEditTrip || !hasUnsavedChanges}
                     size="sm"
                     className="w-full gap-1.5 min-h-9 touch-manipulation"
                     variant={saved ? "outline" : "default"}
@@ -1158,7 +1326,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                 ) : (
                   <Button
                     onClick={handleSave}
-                    disabled={saving || waypoints.length === 0 || !canEditTrip}
+                    disabled={saving || waypoints.length === 0 || !canEditTrip || !hasUnsavedChanges}
                     size="sm"
                     className="w-full gap-1.5 min-h-9 touch-manipulation"
                     variant={saved ? "outline" : "default"}
@@ -1192,10 +1360,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                     size="sm"
                     variant="outline"
                     onClick={() => {
+                      if (!timelineEnabled) return;
                       setActivityOpen(true);
                       void loadActivityHistory();
                     }}
-                    disabled={!effectiveTripId}
+                    disabled={!effectiveTripId || !timelineEnabled}
                     className="gap-1.5"
                   >
                     <History className="h-4 w-4" />
@@ -1204,8 +1373,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setMembersOpen(true)}
-                    disabled={!effectiveTripId}
+                    onClick={() => {
+                      if (!collaborationEnabled) return;
+                      setMembersOpen(true);
+                    }}
+                    disabled={!effectiveTripId || !collaborationEnabled}
                     className="gap-1.5"
                   >
                     <Users className="h-4 w-4" />
@@ -1244,6 +1416,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                     </>
                   )}
                 </div>
+              )}
+              {!collaborationEnabled && (
+                <p className="text-[11px] text-muted-foreground">
+                  Upgrade to Pro to unlock collaborators and activity timeline.
+                </p>
               )}
           </div>
         )}
@@ -1439,6 +1616,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                     if (next === null) return;
                     setDayStartMinutes(Math.min(next, dayEndMinutes - 30));
                   }}
+                  disabled={!canEditTrip}
                 />
               </div>
               <div>
@@ -1453,6 +1631,7 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                     if (next === null) return;
                     setDayEndMinutes(Math.max(next, dayStartMinutes + 30));
                   }}
+                  disabled={!canEditTrip}
                 />
               </div>
               <div>
@@ -1471,6 +1650,17 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                 />
               </div>
             </div>
+            <label className="flex items-start gap-2 rounded-md border bg-muted/30 px-2.5 py-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4"
+                checked={autoSplitLongTransfers}
+                onChange={(e) => setAutoSplitLongTransfers(e.target.checked)}
+              />
+              <span className="text-[11px] text-muted-foreground">
+                Auto-split long transfers with en-route waypoints when a leg cannot fit in one day.
+              </span>
+            </label>
             <Button
               onClick={handleOptimize}
               disabled={optimizing || waypoints.length < 3 || !canEditTrip}
@@ -1534,6 +1724,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                             >
                               <div className="flex items-center gap-2">
                                 <p className="text-xs flex-1 truncate">{wp.name}</p>
+                                {wp.isTransitSplit && (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    Transit
+                                  </Badge>
+                                )}
                                 <div className="flex items-center gap-1">
                                   <Button
                                     variant="ghost"
@@ -1591,12 +1786,16 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                               </div>
                               <Input
                                 value={wp.notes || ""}
-                                placeholder="Add note for this day plan stop..."
+                                placeholder={
+                                  wp.isTransitSplit
+                                    ? "Transit stop generated for long transfer"
+                                    : "Add note for this day plan stop..."
+                                }
                                 className="h-7 text-xs"
                                 onChange={(e) =>
                                   updateWaypoint(id, { notes: e.target.value })
                                 }
-                                disabled={!canEditTrip}
+                                disabled={!canEditTrip || wp.isTransitSplit}
                               />
                             </div>
                           );
@@ -1633,7 +1832,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
             </SheetDescription>
           </SheetHeader>
           <div className="px-4 pb-4">
-            {effectiveTripId ? (
+            {!collaborationEnabled ? (
+              <p className="text-xs text-muted-foreground">
+                Collaboration is available on Pro and Team plans.
+              </p>
+            ) : effectiveTripId ? (
               <TripMembersPanel tripId={effectiveTripId} canManage={canManageTrip} />
             ) : (
               <p className="text-xs text-muted-foreground">
@@ -1655,7 +1858,11 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
             </SheetDescription>
           </SheetHeader>
           <div className="px-4 pb-4 pt-2">
-            {activityLoading ? (
+            {!timelineEnabled ? (
+              <p className="text-xs text-muted-foreground">
+                Activity timeline is available on Pro and Team plans.
+              </p>
+            ) : activityLoading ? (
               <p className="text-xs text-muted-foreground">Loading activity...</p>
             ) : activityEvents.length === 0 ? (
               <p className="text-xs text-muted-foreground">

@@ -8,6 +8,7 @@ export interface WaypointData {
   lng: number;
   order: number;
   isLocked?: boolean;
+  isTransitSplit?: boolean;
   visitMinutes?: number;
   openMinutes?: number;
   closeMinutes?: number;
@@ -45,6 +46,7 @@ interface TripState {
   stays: POI[];
   food: POI[];
   selectedPOI: POI | null;
+  hoveredPOIId: string | null;
   loading: {
     route: boolean;
     attractions: boolean;
@@ -79,6 +81,7 @@ interface TripState {
   setStays: (pois: POI[]) => void;
   setFood: (pois: POI[]) => void;
   setSelectedPOI: (poi: POI | null) => void;
+  setHoveredPOIId: (poiId: string | null) => void;
   setLoading: (key: keyof TripState["loading"], val: boolean) => void;
   resetTrip: () => void;
 }
@@ -94,6 +97,7 @@ const initialState = {
   stays: [] as POI[],
   food: [] as POI[],
   selectedPOI: null,
+  hoveredPOIId: null,
   loading: { route: false, attractions: false, stays: false, food: false },
 };
 
@@ -175,6 +179,7 @@ export const useTripStore = create<TripState>((set, get) => ({
   setStays: (pois) => set({ stays: pois }),
   setFood: (pois) => set({ food: pois }),
   setSelectedPOI: (poi) => set({ selectedPOI: poi }),
+  setHoveredPOIId: (hoveredPOIId) => set({ hoveredPOIId }),
 
   setLoading: (key, val) =>
     set((s) => ({ loading: { ...s.loading, [key]: val } })),

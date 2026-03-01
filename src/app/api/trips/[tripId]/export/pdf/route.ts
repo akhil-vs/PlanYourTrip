@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canViewTrip, getTripAccess } from "@/lib/tripAccess";
-import { buildTripItineraryPdf } from "@/lib/pdf";
+import { buildSimplePdf, buildTripItineraryPdf } from "@/lib/pdf";
+import { canUsePremiumPdf } from "@/lib/subscription";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,48 @@ export async function GET(
   });
   if (!trip) {
     return NextResponse.json({ error: "Itinerary not found" }, { status: 404 });
+  }
+
+  const canUsePremiumExport = canUsePremiumPdf(session.user.plan);
+  if (!canUsePremiumExport) {
+    const lines: string[] = [
+      `Status: ${trip.status}${trip.isPublic ? " (Published)" : ""}`,
+      `Owner: ${trip.user.name} <${trip.user.email}>`,
+      `Stops: ${trip.waypoints.length}`,
+      `Days: ${trip.dayPlans.length}`,
+      "",
+      "Waypoints:",
+      ...trip.waypoints.map((wp, idx) => `${idx + 1}. ${wp.name}`),
+      "",
+      "Day-by-day itinerary:",
+      ...trip.dayPlans.flatMap((day) => {
+        const stopNames = day.waypointIndexes
+          .map((idx) => trip.waypoints[idx]?.name)
+          .filter((name): name is string => Boolean(name));
+        const fallbackNames =
+          stopNames.length > 0
+            ? stopNames
+            : day.waypointIds
+                .map((id) => trip.waypoints.find((wp) => wp.id === id)?.name)
+                .filter((name): name is string => Boolean(name));
+        return [
+          `Day ${day.day} (${day.estimatedTravelMinutes} min travel):`,
+          ...(fallbackNames.length > 0
+            ? fallbackNames.map((name, index) => `  ${index + 1}. ${name}`)
+            : ["  No assigned stops"]),
+        ];
+      }),
+    ];
+    const basicPdfBuffer = buildSimplePdf(`${trip.name} Itinerary`, lines);
+    return new Response(basicPdfBuffer, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${trip.name
+          .replace(/[^a-z0-9]+/gi, "-")
+          .toLowerCase()}-itinerary.pdf"`,
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   const waypointById = new Map(trip.waypoints.map((wp) => [wp.id, wp]));

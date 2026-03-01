@@ -2,23 +2,40 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { unstable_cache } from "next/cache";
 
-function normalizeCacheKey(q: string, proximity: string | null): string[] {
+function normalizeSuggestCacheKey(
+  q: string,
+  proximity: string | null,
+  language: string,
+  limit: string
+): string[] {
   const trimmed = q.trim().toLowerCase();
   const prox = proximity ? proximity.replace(/\s/g, "") : "";
-  return ["search", trimmed, prox];
+  return ["search", "suggest", trimmed, prox, language, limit];
 }
 
-async function fetchMapboxSearch(
+function normalizeRetrieveCacheKey(mapboxId: string, language: string): string[] {
+  return ["search", "retrieve", mapboxId, language.toLowerCase()];
+}
+
+interface SearchSuggestionResult {
+  id: string;
+  name: string;
+  fullName: string;
+}
+
+interface RetrievedLocationResult extends SearchSuggestionResult {
+  lng: number;
+  lat: number;
+}
+
+async function fetchMapboxSuggest(
   q: string,
   proximity: string | null,
   limit: string,
-  language: string
+  language: string,
+  token: string,
+  sessionToken: string
 ) {
-  const token = process.env.MAPBOX_ACCESS_TOKEN;
-  if (!token) throw new Error("Mapbox token not configured");
-
-  const sessionToken = crypto.randomUUID();
-
   const params = new URLSearchParams({
     q,
     access_token: token,
@@ -38,46 +55,74 @@ async function fetchMapboxSearch(
   }
 
   const data = await res.json();
+  const suggestions = (data.suggestions || [])
+    .filter((s: { mapbox_id?: string }) => s.mapbox_id)
+    .slice(0, Number(limit))
+    .map(
+      (s: {
+        mapbox_id: string;
+        name: string;
+        full_address?: string;
+        place_formatted?: string;
+      }): SearchSuggestionResult => ({
+        id: s.mapbox_id,
+        name: s.name,
+        fullName: s.full_address || s.place_formatted || s.name,
+      })
+    );
+  return suggestions;
+}
 
-  const results = await Promise.all(
-    (data.suggestions || [])
-      .filter((s: { mapbox_id?: string }) => s.mapbox_id)
-      .slice(0, 8)
-      .map(
-        async (s: {
-          mapbox_id: string;
-          name: string;
-          full_address?: string;
-          place_formatted?: string;
-        }) => {
-          const retrieveRes = await fetch(
-            `https://api.mapbox.com/search/searchbox/v1/retrieve/${s.mapbox_id}?access_token=${token}&session_token=${sessionToken}`
-          );
-          if (!retrieveRes.ok) return null;
-          const retrieveData = await retrieveRes.json();
-          const feature = retrieveData.features?.[0];
-          if (!feature) return null;
+async function fetchMapboxRetrieve(
+  mapboxId: string,
+  language: string,
+  token: string,
+  sessionToken: string
+): Promise<RetrievedLocationResult | null> {
+  const params = new URLSearchParams({
+    access_token: token,
+    language,
+    session_token: sessionToken,
+  });
+  const url = `https://api.mapbox.com/search/searchbox/v1/retrieve/${mapboxId}?${params}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errorBody = await res.text();
+    console.error("Mapbox retrieve failed:", res.status, errorBody);
+    return null;
+  }
+  const data = await res.json();
+  const feature = data.features?.[0];
+  if (!feature) return null;
+  const props = feature.properties || {};
+  return {
+    id: mapboxId,
+    name: props.name || props.place_formatted || "Selected location",
+    fullName: props.full_address || props.place_formatted || props.name || "Selected location",
+    lng: feature.geometry.coordinates[0],
+    lat: feature.geometry.coordinates[1],
+  };
+}
 
-          return {
-            id: s.mapbox_id,
-            name: s.name,
-            fullName: s.full_address || s.place_formatted || s.name,
-            lng: feature.geometry.coordinates[0],
-            lat: feature.geometry.coordinates[1],
-          };
-        }
-      )
+async function getCachedRetrieve(
+  mapboxId: string,
+  language: string,
+  token: string,
+  sessionToken: string
+) {
+  const cacheKey = normalizeRetrieveCacheKey(mapboxId, language);
+  const cachedRetrieve = unstable_cache(
+    () => fetchMapboxRetrieve(mapboxId, language, token, sessionToken),
+    cacheKey,
+    { revalidate: 86400 }
   );
-
-  return results.filter(Boolean);
+  return cachedRetrieve();
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const q = searchParams.get("q");
-  if (!q) {
-    return NextResponse.json([], { status: 200 });
-  }
+  const mapboxId = searchParams.get("mapbox_id");
 
   const token = process.env.MAPBOX_ACCESS_TOKEN;
   if (!token) {
@@ -90,13 +135,33 @@ export async function GET(req: NextRequest) {
   const limit = searchParams.get("limit") || "8";
   const language = searchParams.get("language") || "en";
   const proximity = searchParams.get("proximity");
+  const sessionToken = searchParams.get("session_token") || crypto.randomUUID();
 
-  const cacheKey = normalizeCacheKey(q, proximity);
+  if (mapboxId) {
+    const retrieved = await getCachedRetrieve(mapboxId, language, token, sessionToken);
+    if (!retrieved) {
+      return NextResponse.json({ error: "Location not found" }, { status: 404 });
+    }
+    return NextResponse.json(retrieved, {
+      headers: {
+        "Cache-Control": "public, s-maxage=86400, stale-while-revalidate",
+      },
+    });
+  }
+
+  if (!q) {
+    return NextResponse.json([], { status: 200 });
+  }
+  if (q.trim().length < 3) {
+    return NextResponse.json([], { status: 200 });
+  }
+
+  const cacheKey = normalizeSuggestCacheKey(q, proximity, language, limit);
 
   const getCachedSearch = unstable_cache(
-    () => fetchMapboxSearch(q, proximity, limit, language),
+    () => fetchMapboxSuggest(q, proximity, limit, language, token, sessionToken),
     cacheKey,
-    { revalidate: 86400 }
+    { revalidate: 900 }
   );
 
   try {

@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canManageTrip, getTripAccess } from "@/lib/tripAccess";
 import { createTripEvent } from "@/lib/tripEvents";
+import { canUseCollaboration } from "@/lib/subscription";
 
 export async function GET(
   _req: NextRequest,
@@ -11,6 +12,12 @@ export async function GET(
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!canUseCollaboration(session.user.plan)) {
+    return NextResponse.json(
+      { error: "Upgrade to Pro to manage collaborators" },
+      { status: 402 }
+    );
   }
   const { tripId } = await params;
   const access = await getTripAccess(tripId, session.user.id);
@@ -51,6 +58,12 @@ export async function POST(
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!canUseCollaboration(session.user.plan)) {
+    return NextResponse.json(
+      { error: "Upgrade to Pro to manage collaborators" },
+      { status: 402 }
+    );
   }
   const { tripId } = await params;
   const access = await getTripAccess(tripId, session.user.id);

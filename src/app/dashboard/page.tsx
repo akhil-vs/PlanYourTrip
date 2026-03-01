@@ -33,6 +33,7 @@ import {
   Share2,
   FileDown,
   Users2,
+  Globe,
 } from "lucide-react";
 
 function WhatsAppIcon({ className }: { className?: string }) {
@@ -88,10 +89,12 @@ interface TripTemplate {
 export default function DashboardPage() {
   const { data: session } = useSession();
   const router = useRouter();
-  const [trips, setTrips] = useState<Trip[]>([]);
+  const [myTrips, setMyTrips] = useState<Trip[]>([]);
+  const [publicTrips, setPublicTrips] = useState<Trip[]>([]);
   const [templates, setTemplates] = useState<TripTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [templateLoadingId, setTemplateLoadingId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
     if (session?.user) {
@@ -101,7 +104,13 @@ export default function DashboardPage() {
           return res.json();
         })
         .then((data) => {
-          setTrips(Array.isArray(data) ? data : []);
+          if (Array.isArray(data)) {
+            setMyTrips(data);
+            setPublicTrips([]);
+          } else {
+            setMyTrips(Array.isArray(data?.myTrips) ? data.myTrips : []);
+            setPublicTrips(Array.isArray(data?.publicTrips) ? data.publicTrips : []);
+          }
           setLoading(false);
         })
         .catch(() => setLoading(false));
@@ -117,7 +126,7 @@ export default function DashboardPage() {
     if (!confirm("Are you sure you want to delete this trip?")) return;
 
     await fetch(`/api/trips/${tripId}`, { method: "DELETE" });
-    setTrips((prev) => prev.filter((t) => t.id !== tripId));
+    setMyTrips((prev) => prev.filter((t) => t.id !== tripId));
   };
 
   const handleSaveTemplate = async (e: React.MouseEvent, tripId: string) => {
@@ -192,6 +201,30 @@ export default function DashboardPage() {
     window.open(`/api/trips/${tripId}/export/pdf`, "_blank", "noopener,noreferrer");
   };
 
+  const canManageVisibility = (trip: Trip) => {
+    return trip.members?.[0]?.role === "OWNER";
+  };
+
+  const handleToggleVisibility = async (e: React.MouseEvent, trip: Trip) => {
+    e.stopPropagation();
+    if (!canManageVisibility(trip)) return;
+    const method = trip.isPublic ? "DELETE" : "POST";
+    const res = await fetch(`/api/trips/${trip.id}/publish`, { method });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      setStatusMessage(data?.error || "Failed to update itinerary visibility");
+      setTimeout(() => setStatusMessage(""), 2500);
+      return;
+    }
+    setMyTrips((prev) =>
+      prev.map((item) =>
+        item.id === trip.id ? { ...item, isPublic: Boolean(data?.isPublic) } : item
+      )
+    );
+    setStatusMessage(data?.isPublic ? "Itinerary is now public" : "Itinerary is now private");
+    setTimeout(() => setStatusMessage(""), 2000);
+  };
+
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString("en-US", {
       month: "short",
@@ -250,9 +283,9 @@ export default function DashboardPage() {
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Your Trips</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Your Itineraries</h1>
           <p className="text-muted-foreground mt-1">
-            Manage, refine, and share your itineraries
+            Manage your trips and discover published itineraries from the community
           </p>
         </div>
 
@@ -296,7 +329,7 @@ export default function DashboardPage() {
               <Skeleton key={i} className="h-48 rounded-xl" />
             ))}
           </div>
-        ) : trips.length === 0 ? (
+        ) : myTrips.length === 0 ? (
           <div className="text-center py-20">
             <Route className="h-16 w-16 mx-auto mb-4 text-gray-300" />
             <h2 className="text-xl font-semibold text-gray-900 mb-2">
@@ -339,8 +372,8 @@ export default function DashboardPage() {
             )}
           </div>
         ) : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {trips.map((trip) => (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
+            {myTrips.map((trip) => (
               <Card
                 key={trip.id}
                 className="group hover:shadow-lg transition-shadow cursor-pointer"
@@ -382,21 +415,32 @@ export default function DashboardPage() {
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
                           onClick={(e) => handleCopyLink(e, trip.id)}
+                          disabled={!trip.isPublic}
                         >
                           <Share2 className="h-4 w-4 mr-2" />
                           {copiedId === trip.id ? "Link copied" : "Copy share link"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={(e) => handleShareWhatsApp(e, trip.id)}
+                          disabled={!trip.isPublic}
                         >
                           <WhatsAppIcon className="h-4 w-4 mr-2" />
                           Share via WhatsApp
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={(e) => handleShareFacebook(e, trip.id)}
+                          disabled={!trip.isPublic}
                         >
                           <FacebookIcon className="h-4 w-4 mr-2" />
                           Share on Facebook
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={(e) => handleToggleVisibility(e, trip)}
+                          disabled={!canManageVisibility(trip)}
+                        >
+                          <Globe className="h-4 w-4 mr-2" />
+                          {trip.isPublic ? "Make private" : "Make public"}
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -461,11 +505,71 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
+
+        {!loading && (
+          <div>
+            <div className="mb-3">
+              <h2 className="text-lg font-semibold text-gray-900">Published Trips</h2>
+              <p className="text-sm text-muted-foreground">
+                Public itineraries shared by other travelers
+              </p>
+            </div>
+            {publicTrips.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No published trips available right now.
+              </p>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {publicTrips.map((trip) => (
+                  <Card
+                    key={trip.id}
+                    className="group hover:shadow-lg transition-shadow cursor-pointer"
+                    onClick={() => router.push(`/share/${trip.shareId}`)}
+                  >
+                    <CardHeader className="pb-3">
+                      <div className="min-w-0 flex-1">
+                        <CardTitle className="text-lg truncate">{trip.name}</CardTitle>
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <Badge variant="outline">Published</Badge>
+                          <Badge variant="outline" className="gap-1">
+                            <Users2 className="h-3 w-3" />
+                            {trip._count.members ?? 1}
+                          </Badge>
+                        </div>
+                        <CardDescription className="mt-1 line-clamp-2">
+                          {trip.description || "Community-shared itinerary"}
+                        </CardDescription>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-1">
+                          <MapPin className="h-3.5 w-3.5" />
+                          {trip.waypoints.length} stop
+                          {trip.waypoints.length !== 1 ? "s" : ""}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" />
+                          {formatDate(trip.updatedAt)}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {copiedId && (
         <div className="fixed bottom-4 left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:bottom-6 sm:w-auto bg-gray-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg z-50 animate-in fade-in duration-200 text-center">
           Share link copied to clipboard
+        </div>
+      )}
+      {statusMessage && (
+        <div className="fixed bottom-16 left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:bottom-20 sm:w-auto bg-gray-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg z-50 animate-in fade-in duration-200 text-center">
+          {statusMessage}
         </div>
       )}
     </div>

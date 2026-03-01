@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canViewTrip, getTripAccess } from "@/lib/tripAccess";
 import { prisma } from "@/lib/prisma";
+import { canUseActivityTimeline } from "@/lib/subscription";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,13 @@ export async function GET(
   );
   const historyOnly = url.searchParams.get("mode") === "history";
   const initialSince = Number(url.searchParams.get("since") || 0);
+
+  if (historyOnly && !canUseActivityTimeline(session.user.plan)) {
+    return NextResponse.json(
+      { error: "Upgrade to Pro to access activity timeline" },
+      { status: 402 }
+    );
+  }
 
   if (historyOnly) {
     const events = await prisma.tripChangeEvent.findMany({

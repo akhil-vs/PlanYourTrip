@@ -2,8 +2,8 @@ export interface SearchResult {
   id: string;
   name: string;
   fullName: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
 }
 
 let searchSessionToken = crypto.randomUUID();
@@ -61,6 +61,20 @@ export async function searchLocations(
   return results;
 }
 
+export async function retrieveLocationById(
+  mapboxId: string
+): Promise<SearchResult | null> {
+  if (!mapboxId) return null;
+  const params = new URLSearchParams({
+    mapbox_id: mapboxId,
+    language: "en",
+    session_token: searchSessionToken,
+  });
+  const res = await fetch(`/api/search?${params}`);
+  if (!res.ok) return null;
+  return (await res.json()) as SearchResult;
+}
+
 export interface DirectionsResult {
   distance: number;
   duration: number;
@@ -89,6 +103,12 @@ interface OptimizerInputWaypoint {
   lat: number;
   lng: number;
   order: number;
+  isLocked?: boolean;
+  visitMinutes?: number;
+  openMinutes?: number;
+  closeMinutes?: number;
+  isTransitSplit?: boolean;
+  notes?: string;
 }
 
 export async function optimizeWaypoints(
@@ -100,7 +120,8 @@ export async function optimizeWaypoints(
   defaultVisitMinutes?: number,
   lockedWaypointIds?: string[],
   visitMinutesByWaypointId?: Record<string, number>,
-  timeWindowsByWaypointId?: Record<string, { openMinutes: number; closeMinutes: number }>
+  timeWindowsByWaypointId?: Record<string, { openMinutes: number; closeMinutes: number }>,
+  autoSplitLongTransfers = true
 ): Promise<
   | {
       waypoints: OptimizerInputWaypoint[];
@@ -125,6 +146,7 @@ export async function optimizeWaypoints(
       lockedWaypointIds,
       visitMinutesByWaypointId,
       timeWindowsByWaypointId,
+      autoSplitLongTransfers,
     }),
   });
   if (!res.ok) return null;

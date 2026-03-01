@@ -3,7 +3,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Search, MapPin, Loader2, LocateFixed } from "lucide-react";
-import { searchLocations, resetSearchSession, SearchResult } from "@/lib/api/mapbox";
+import {
+  searchLocations,
+  resetSearchSession,
+  SearchResult,
+  retrieveLocationById,
+} from "@/lib/api/mapbox";
 import { useTripStore } from "@/stores/tripStore";
 import { useMapStore } from "@/stores/mapStore";
 import { Button } from "@/components/ui/button";
@@ -22,7 +27,7 @@ export function SearchInput({ disabled = false }: { disabled?: boolean }) {
 
   const doSearch = useCallback(async (q: string) => {
     if (disabled) return;
-    if (q.trim().length < 2) {
+    if (q.trim().length < 3) {
       setResults([]);
       setOpen(false);
       return;
@@ -47,13 +52,23 @@ export function SearchInput({ disabled = false }: { disabled?: boolean }) {
     if (disabled) return;
     setQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => doSearch(value), 450);
+    debounceRef.current = setTimeout(() => doSearch(value), 650);
   };
 
-  const handleSelect = (result: SearchResult) => {
+  const handleSelect = async (result: SearchResult) => {
     if (disabled) return;
-    insertWaypointNear({ name: result.name, lat: result.lat, lng: result.lng });
-    setViewState({ longitude: result.lng, latitude: result.lat, zoom: 10 });
+    let selected = result;
+    if (selected.lat === undefined || selected.lng === undefined) {
+      setLoading(true);
+      const resolved = await retrieveLocationById(result.id);
+      setLoading(false);
+      if (!resolved || resolved.lat === undefined || resolved.lng === undefined) return;
+      selected = resolved;
+    }
+    const { lat, lng } = selected;
+    if (lat === undefined || lng === undefined) return;
+    insertWaypointNear({ name: selected.name, lat, lng });
+    setViewState({ longitude: lng, latitude: lat, zoom: 10 });
     setQuery("");
     setResults([]);
     setOpen(false);
@@ -119,8 +134,8 @@ export function SearchInput({ disabled = false }: { disabled?: boolean }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               if (results.length > 0) {
-                handleSelect(results[0]);
-              } else if (query.trim().length >= 2) {
+                void handleSelect(results[0]);
+              } else if (query.trim().length >= 3) {
                 void doSearch(query);
               }
             }
@@ -157,7 +172,7 @@ export function SearchInput({ disabled = false }: { disabled?: boolean }) {
             results.map((r) => (
               <button
                 key={r.id}
-                onClick={() => handleSelect(r)}
+                onClick={() => void handleSelect(r)}
                 className="w-full flex items-start gap-3 px-3 py-2.5 hover:bg-gray-50 text-left transition-colors"
               >
                 <MapPin className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
