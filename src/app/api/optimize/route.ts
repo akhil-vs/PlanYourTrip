@@ -228,29 +228,63 @@ async function reverseGeocodeLocationName(
   const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
   if (cache.has(key)) return cache.get(key) || null;
 
-  const accessToken =
-    process.env.MAPBOX_ACCESS_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
-  if (!accessToken) {
+  try {
+    const accessToken =
+      process.env.MAPBOX_ACCESS_TOKEN || process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    if (accessToken) {
+      const mapboxEndpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${encodeURIComponent(
+        accessToken
+      )}&types=place,locality,neighborhood,address&limit=1`;
+      const mapboxRes = await fetch(mapboxEndpoint, { cache: "no-store" });
+      if (mapboxRes.ok) {
+        const data = (await mapboxRes.json()) as {
+          features?: Array<{ place_name?: string; text?: string }>;
+        };
+        const feature = data.features?.[0];
+        const label = feature?.place_name || feature?.text || null;
+        if (label) {
+          cache.set(key, label);
+          return label;
+        }
+      }
+    }
+
+    // Fallback: Geoapify reverse geocoding, usually returns locality/address label.
+    const geoapifyKey = process.env.GEOAPIFY_API_KEY;
+    if (geoapifyKey) {
+      const geoEndpoint = `https://api.geoapify.com/v1/geocode/reverse?lat=${encodeURIComponent(
+        String(lat)
+      )}&lon=${encodeURIComponent(String(lng))}&format=json&apiKey=${encodeURIComponent(
+        geoapifyKey
+      )}`;
+      const geoRes = await fetch(geoEndpoint, { cache: "no-store" });
+      if (geoRes.ok) {
+        const geoData = (await geoRes.json()) as {
+          results?: Array<{
+            formatted?: string;
+            address_line1?: string;
+            city?: string;
+            town?: string;
+            village?: string;
+            county?: string;
+          }>;
+        };
+        const first = geoData.results?.[0];
+        const fallbackLabel =
+          first?.address_line1 ||
+          first?.city ||
+          first?.town ||
+          first?.village ||
+          first?.county ||
+          first?.formatted ||
+          null;
+        cache.set(key, fallbackLabel);
+        return fallbackLabel;
+      }
+    }
+
     cache.set(key, null);
     return null;
-  }
-
-  try {
-    const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${encodeURIComponent(
-      accessToken
-    )}&types=place,locality,neighborhood,address&limit=1`;
-    const res = await fetch(endpoint, { cache: "no-store" });
-    if (!res.ok) {
-      cache.set(key, null);
-      return null;
-    }
-    const data = (await res.json()) as {
-      features?: Array<{ place_name?: string; text?: string }>;
-    };
-    const feature = data.features?.[0];
-    const label = feature?.place_name || feature?.text || null;
-    cache.set(key, label);
-    return label;
   } catch {
     cache.set(key, null);
     return null;
