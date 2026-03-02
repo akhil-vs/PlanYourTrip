@@ -918,32 +918,47 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
     }
   };
 
-  const handlePublish = async () => {
+  const handleSetVisibility = async (nextPublic: boolean) => {
     const currentTripId = useTripStore.getState().tripId;
     if (!currentTripId || !canManageTrip) return;
     setActionError("");
     setActionNotice("");
     try {
-      const res = await fetch(`/api/trips/${currentTripId}/publish`, { method: "POST" });
+      const res = await fetch(`/api/trips/${currentTripId}/publish`, {
+        method: nextPublic ? "POST" : "DELETE",
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setActionError(data?.error || "Failed to publish itinerary");
+        setActionError(
+          data?.error ||
+            (nextPublic
+              ? "Failed to make itinerary public"
+              : "Failed to make itinerary private")
+        );
         return;
       }
-      setIsPublic(true);
+      setIsPublic(Boolean(data?.isPublic));
       const shareUrl = data?.shareUrl as string | undefined;
-      if (shareUrl && typeof navigator !== "undefined" && navigator.clipboard) {
+      if (nextPublic && shareUrl && typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(shareUrl).catch(() => {});
       }
       setActionNotice(
-        shareUrl
-          ? "Itinerary published. Share link copied to clipboard."
-          : "Itinerary published."
+        nextPublic
+          ? shareUrl
+            ? "Itinerary is public. Share link copied to clipboard."
+            : "Itinerary is public."
+          : "Itinerary is private."
       );
       window.setTimeout(() => setActionNotice(""), 3200);
     } catch {
-      setActionError("Failed to publish itinerary");
+      setActionError(
+        nextPublic ? "Failed to make itinerary public" : "Failed to make itinerary private"
+      );
     }
+  };
+
+  const handlePublish = async () => {
+    await handleSetVisibility(true);
   };
 
   const handleExportPdf = async () => {
@@ -1406,12 +1421,12 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={handlePublish}
-                        disabled={!effectiveTripId || tripStatus !== "FINALIZED"}
+                        onClick={() => void handleSetVisibility(!isPublic)}
+                        disabled={!effectiveTripId}
                         className="gap-1.5"
                       >
                         <Globe className="h-4 w-4" />
-                        Publish itinerary
+                        {isPublic ? "Make private" : "Make public"}
                       </Button>
                     </>
                   )}

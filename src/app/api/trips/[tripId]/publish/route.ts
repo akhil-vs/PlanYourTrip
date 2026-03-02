@@ -17,12 +17,6 @@ export async function POST(
   if (!access || !canManageTrip(access.role)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  if (access.trip.status !== "FINALIZED") {
-    return NextResponse.json(
-      { error: "Itinerary must be finalized before publishing" },
-      { status: 400 }
-    );
-  }
 
   const trip = await prisma.trip.update({
     where: { id: tripId },
