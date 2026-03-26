@@ -50,11 +50,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     signIn: "/auth/login",
   },
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) {
         token.id = user.id;
         token.plan = (user as { plan?: "FREE" | "PRO" | "TEAM" }).plan || "FREE";
         token.isAdmin = Boolean((user as { isAdmin?: boolean }).isAdmin);
+      }
+      if (trigger === "update" && session) {
+        const nextPlan = (session as { plan?: "FREE" | "PRO" | "TEAM" }).plan;
+        if (nextPlan === "FREE" || nextPlan === "PRO" || nextPlan === "TEAM") {
+          token.plan = nextPlan;
+        }
       }
       return token;
     },
