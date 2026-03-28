@@ -319,7 +319,14 @@ export default function DashboardPage() {
                 )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => signOut({ callbackUrl: "/" })}
+                  onClick={() =>
+                    signOut({
+                      callbackUrl:
+                        typeof window !== "undefined"
+                          ? `${window.location.origin}/`
+                          : "/",
+                    })
+                  }
                   className="text-red-600"
                 >
                   <LogOut className="h-4 w-4 mr-2" />

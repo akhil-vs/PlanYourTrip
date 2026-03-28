@@ -47,8 +47,18 @@ function LoginForm() {
       if (res?.error) {
         setError("Invalid email or password");
       } else if (res?.ok) {
-        // Full page redirect ensures new session cookie is sent (fixes Vercel production)
-        window.location.href = res?.url ?? callbackUrl;
+        // Stay on the current origin (e.g. :3001) if Auth.js returned an absolute URL from NEXTAUTH_URL.
+        const raw = res?.url ?? callbackUrl;
+        let href = raw;
+        if (raw.startsWith("http://") || raw.startsWith("https://")) {
+          try {
+            const u = new URL(raw);
+            href = `${u.pathname}${u.search}${u.hash}`;
+          } catch {
+            href = callbackUrl.startsWith("/") ? callbackUrl : "/dashboard";
+          }
+        }
+        window.location.href = href;
         return;
       } else {
         setError("Sign in failed. Please try again.");

@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { isAdminEmail } from "@/lib/admin";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  // Use the request Host (e.g. localhost:3001) instead of a fixed NEXTAUTH_URL port for redirects.
+  trustHost: true,
   providers: [
     Credentials({
       name: "credentials",
