@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -215,12 +216,13 @@ export default function AdminPage() {
     <div className="min-h-screen bg-gray-50">
       <main id="main" className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8 space-y-5">
         <div className="flex items-center justify-between">
-          <Button asChild variant="ghost" size="sm" className="gap-2">
-            <Link href="/dashboard">
-              <ArrowLeft className="h-4 w-4" />
-              Back to dashboard
-            </Link>
-          </Button>
+          <Link
+            href="/dashboard"
+            className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "gap-2 inline-flex")}
+          >
+            <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
+            Back to dashboard
+          </Link>
           <div className="flex items-center gap-2">
             {[7, 30, 90].map((days) => (
               <Button

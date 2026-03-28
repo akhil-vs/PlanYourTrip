@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 
 interface EmptyStateProps {
@@ -18,9 +19,12 @@ export function EmptyState({ icon: Icon, title, description, action }: EmptyStat
       <h2 className="text-lg font-semibold text-slate-900 font-display">{title}</h2>
       <p className="mt-2 text-sm text-slate-600 text-pretty">{description}</p>
       {action && (
-        <Button asChild className="mt-6">
-          <Link href={action.href}>{action.label}</Link>
-        </Button>
+        <Link
+          href={action.href}
+          className={cn(buttonVariants(), "mt-6 inline-flex")}
+        >
+          {action.label}
+        </Link>
       )}
     </div>
   );

@@ -35,9 +35,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Viazo - Travel Route Planner",
+  title: "Viazo — Travel route planner",
   description:
-    "Plan your perfect trip with interactive maps, route planning, attractions, restaurants, and stays worldwide.",
+    "Turn every stop into a memory. Plan trips on an interactive map with routes, sights, meals, and stays—then share the one itinerary everyone will follow.",
   icons: {
     icon: [{ url: "/favicon.ico", type: "image/x-icon", sizes: "any" }],
     apple: [{ url: "/apple-icon", type: "image/png", sizes: "180x180" }],

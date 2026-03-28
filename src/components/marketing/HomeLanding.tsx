@@ -76,7 +76,7 @@ export function HomeLanding() {
               <FadeIn delay={0}>
                 <div className="inline-flex items-center gap-2 bg-blue-100 text-blue-700 px-4 py-1.5 rounded-full text-sm font-medium mb-6">
                   <Search className="h-4 w-4 shrink-0" aria-hidden />
-                  Maps, days, and stops in one workspace
+                  Maps, routes, and moments in one workspace
                 </div>
               </FadeIn>
               <FadeIn delay={0.05}>
@@ -84,17 +84,16 @@ export function HomeLanding() {
                   id="hero-heading"
                   className="text-[clamp(1.875rem,5vw+0.75rem,3.75rem)] font-bold tracking-tight text-gray-900 mb-6 leading-[1.15] text-balance font-display"
                 >
-                  Itineraries that stay
+                  Turn Every Stop into{" "}
                   <span className="bg-gradient-to-r from-blue-600 to-emerald-500 bg-clip-text text-transparent">
-                    {" "}
-                    clear on the map
+                    a Memory
                   </span>
                 </h1>
               </FadeIn>
               <FadeIn delay={0.1}>
                 <p className="text-base sm:text-lg text-gray-600 max-w-2xl lg:max-w-none mx-auto lg:mx-0 mb-8 sm:mb-10 text-pretty">
-                  Sketch routes, layer in sights and meals, invite people who actually travel with you, then share or
-                  export a plan everyone can follow—without a dozen tabs.
+                  Lay out sights, meals, and stays on a live map, invite the people who travel with you, and keep one
+                  plan everyone trusts—so when you look back, the path still feels as vivid as the moments along it.
                 </p>
               </FadeIn>
               <FadeIn delay={0.2}>

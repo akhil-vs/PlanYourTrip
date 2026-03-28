@@ -2,7 +2,8 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export default function Error({
   error,
@@ -25,9 +26,9 @@ export default function Error({
         <Button type="button" onClick={() => reset()}>
           Try again
         </Button>
-        <Button variant="outline" asChild>
-          <Link href="/">Go home</Link>
-        </Button>
+        <Link href="/" className={cn(buttonVariants({ variant: "outline" }), "inline-flex")}>
+          Go home
+        </Link>
       </div>
     </div>
   );
