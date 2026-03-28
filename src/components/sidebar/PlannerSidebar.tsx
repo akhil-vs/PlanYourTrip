@@ -61,6 +61,7 @@ import {
   Compass,
   X,
   Trash2,
+  Shield,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 import {
@@ -1332,6 +1333,16 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
           >
             <Home className="h-5 w-5" aria-hidden />
           </Link>
+          {session?.user?.isAdmin && (
+            <Link
+              href="/admin"
+              className="p-2 sm:p-2.5 rounded-lg bg-white shadow-lg border hover:bg-gray-50 min-w-[44px] min-h-[44px] flex items-center justify-center text-amber-700"
+              aria-label="Admin panel"
+              title="Admin panel"
+            >
+              <Shield className="h-5 w-5" aria-hidden />
+            </Link>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -1386,6 +1397,16 @@ export function PlannerSidebar({ tripId }: PlannerSidebarProps) {
             >
               <Home className="h-5 w-5" />
             </Link>
+            {session?.user?.isAdmin && (
+              <Link
+                href="/admin"
+                className="shrink-0 p-1.5 rounded-md hover:bg-gray-100 text-amber-700 hover:text-amber-800 transition-colors"
+                title="Admin panel"
+                aria-label="Admin panel"
+              >
+                <Shield className="h-5 w-5" aria-hidden />
+              </Link>
+            )}
             <MapPin className="h-5 w-5 text-blue-600 shrink-0" />
             {editingName ? (
               <div className="flex items-center gap-1 flex-1">

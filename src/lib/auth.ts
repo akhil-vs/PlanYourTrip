@@ -52,9 +52,28 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     async jwt({ token, user, trigger, session }) {
       if (user) {
-        token.id = user.id;
-        token.plan = (user as { plan?: "FREE" | "PRO" | "TEAM" }).plan || "FREE";
-        token.isAdmin = Boolean((user as { isAdmin?: boolean }).isAdmin);
+        const u = user as {
+          id: string;
+          email?: string | null;
+          plan?: "FREE" | "PRO" | "TEAM";
+          isAdmin?: boolean;
+        };
+        token.id = u.id;
+        if (u.email) token.email = u.email;
+        token.plan = u.plan || "FREE";
+        token.isAdmin = Boolean(u.isAdmin);
+      }
+      // Legacy JWTs may lack email; hydrate once so ADMIN_EMAILS / isAdmin work.
+      if (!token.email && typeof token.id === "string") {
+        const row = await prisma.user.findUnique({
+          where: { id: token.id },
+          select: { email: true },
+        });
+        if (row?.email) token.email = row.email;
+      }
+      // Keep admin flag in sync on every request (matches ADMIN_EMAILS in env).
+      if (typeof token.email === "string" && token.email.length > 0) {
+        token.isAdmin = isAdminEmail(token.email);
       }
       if (trigger === "update" && session) {
         const nextPlan = (session as { plan?: "FREE" | "PRO" | "TEAM" }).plan;
